@@ -32,10 +32,12 @@ type Options struct {
 	Uri       string  `short:"u" long:"uri"        description:"URI" default:"/"`
 	Ssl       bool    `short:"S" long:"ssl"        description:"Enable TLS"`
 	Expect    string  `short:"e" long:"expect"     description:"Expected status codes (csv)" default:""`
-	JsonKey   string  `short:"K" long:"json-key"   description:"JSON key "`
-	JsonValue string  `short:"V" long:"json-value" description:"Expected json value"`
+	JsonKey   string  `long:"json-key"   description:"JSON key "`
+	JsonValue string  `long:"json-value" description:"Expected json value"`
 	Method    string  `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
 	UserAgent string  `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
+	ClientCertFile string `short:"J" long:"client-cert" description:"Client Certificate File"`
+	PrivateKeyFile string `short:"K" long:"private-key" description:"Private Key File"`
 }
 
 const (
@@ -45,9 +47,25 @@ const (
 	NagiosUnknown  = 3
 )
 
-var opts Options
+func genTlsConfig(opts Options) (*tls.Config) {
+	conf := &tls.Config{}
+
+	conf.InsecureSkipVerify = true
+
+	if opts.ClientCertFile != "" && opts.PrivateKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(opts.ClientCertFile, opts.PrivateKeyFile)
+		if err != nil {
+			fmt.Printf("HTTP UNKNOWN - %s\n", err)
+			os.Exit(NagiosUnknown)
+		}
+		conf.Certificates = []tls.Certificate{cert}
+	}
+
+	return conf
+}
 
 func main() {
+	var opts Options
 	scheme := "http"
 	_, err := flags.Parse(&opts)
 	if err != nil {
@@ -71,9 +89,7 @@ func main() {
 
 	// https://golang.org/pkg/crypto/tls/#Config
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
+		TLSClientConfig: genTlsConfig(opts),
 	}
 
 	// https://github.com/golang/go/issues/17051
