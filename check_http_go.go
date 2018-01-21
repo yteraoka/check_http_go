@@ -174,7 +174,7 @@ func main() {
 		// https://qiita.com/hnakamur/items/c3560a4b780487ef6065
 		v, _ := dyno.Get(d, s...)
 		fmt.Println(v)
-		if v == opts.JsonValue {
+		if v != opts.JsonValue {
 			nagios_status = NagiosCritical
 		}
 	}
