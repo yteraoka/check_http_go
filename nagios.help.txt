@@ -1,0 +1,140 @@
+Usage:
+ check_http -H <vhost> | -I <IP-address> [-u <uri>] [-p <port>]
+       [-J <client certificate file>] [-K <private key>]
+       [-w <warn time>] [-c <critical time>] [-t <timeout>] [-L] [-E] [-a auth]
+       [-b proxy_auth] [-f <ok|warning|critcal|follow|sticky|stickyport>]
+       [-e <expect>] [-d string] [-s string] [-l] [-r <regex> | -R <case-insensitive regex>]
+       [-P string] [-m <min_pg_size>:<max_pg_size>] [-4|-6] [-N] [-M <age>]
+       [-A string] [-k string] [-S <version>] [--sni] [-C <warn_age>[,<crit_age>]]
+       [-T <content-type>] [-j method]
+NOTE: One or both of -H and -I must be specified
+
+Options:
+ -h, --help
+    Print detailed help screen
+ -V, --version
+    Print version information
+ --extra-opts=[section][@file]
+    Read options from an ini file. See
+    https://www.nagios-plugins.org/doc/extra-opts.html
+    for usage and examples.
+ -H, --hostname=ADDRESS
+    Host name argument for servers using host headers (virtual host)
+    Append a port to include it in the header (eg: example.com:5000)
+ -I, --IP-address=ADDRESS
+    IP address or name (use numeric address if possible to bypass DNS lookup).
+ -p, --port=INTEGER
+    Port number (default: 80)
+ -4, --use-ipv4
+    Use IPv4 connection
+ -6, --use-ipv6
+    Use IPv6 connection
+ -S, --ssl=VERSION
+    Connect via SSL. Port defaults to 443. VERSION is optional, and prevents
+    auto-negotiation (1 = TLSv1, 2 = SSLv2, 3 = SSLv3).
+ --sni
+    Enable SSL/TLS hostname extension support (SNI)
+ -C, --certificate=INTEGER[,INTEGER]
+    Minimum number of days a certificate has to be valid. Port defaults to 443
+    (when this option is used the URL is not checked.)
+ -J, --client-cert=FILE
+   Name of file that contains the client certificate (PEM format)
+   to be used in establishing the SSL session
+ -K, --private-key=FILE
+   Name of file containing the private key (PEM format)
+   matching the client certificate
+ -e, --expect=STRING
+    Comma-delimited list of strings, at least one of them is expected in
+    the first (status) line of the server response (default: HTTP/1.)
+    If specified skips all other status line logic (ex: 3xx, 4xx, 5xx processing)
+ -d, --header-string=STRING
+    String to expect in the response headers
+ -s, --string=STRING
+    String to expect in the content
+ -u, --url=PATH
+    URL to GET or POST (default: /)
+ -P, --post=STRING
+    URL encoded http POST data
+ -j, --method=STRING  (for example: HEAD, OPTIONS, TRACE, PUT, DELETE)
+    Set HTTP method.
+ -N, --no-body
+    Don't wait for document body: stop reading after headers.
+    (Note that this still does an HTTP GET or POST, not a HEAD.)
+ -M, --max-age=SECONDS
+    Warn if document is more than SECONDS old. the number can also be of
+    the form "10m" for minutes, "10h" for hours, or "10d" for days.
+ -T, --content-type=STRING
+    specify Content-Type header media type when POSTing
+
+ -l, --linespan
+    Allow regex to span newlines (must precede -r or -R)
+ -r, --regex, --ereg=STRING
+    Search page for regex STRING
+ -R, --eregi=STRING
+    Search page for case-insensitive regex STRING
+ --invert-regex
+    Return CRITICAL if found, OK if not
+
+ -a, --authorization=AUTH_PAIR
+    Username:password on sites with basic authentication
+ -b, --proxy-authorization=AUTH_PAIR
+    Username:password on proxy-servers with basic authentication
+ -A, --useragent=STRING
+    String to be sent in http header as "User Agent"
+ -k, --header=STRING
+    Any other tags to be sent in http header. Use multiple times for additional headers
+ -E, --extended-perfdata
+    Print additional performance data
+ -L, --link
+    Wrap output in HTML link (obsoleted by urlize)
+ -f, --onredirect=<ok|warning|critical|follow|sticky|stickyport>
+    How to handle redirected pages. sticky is like follow but stick to the
+    specified IP address. stickyport also ensures port stays the same.
+ -m, --pagesize=INTEGER<:INTEGER>
+    Minimum page size required (bytes) : Maximum page size required (bytes)
+ -w, --warning=DOUBLE
+    Response time to result in warning status (seconds)
+ -c, --critical=DOUBLE
+    Response time to result in critical status (seconds)
+ -t, --timeout=INTEGER
+    Seconds before connection times out (default: 10)
+ -v, --verbose
+    Show details for command-line debugging (Nagios may truncate output)
+
+Notes:
+ This plugin will attempt to open an HTTP connection with the host.
+ Successful connects return STATE_OK, refusals and timeouts return STATE_CRITICAL
+ other errors return STATE_UNKNOWN.  Successful connects, but incorrect reponse
+ messages from the host result in STATE_WARNING return values.  If you are
+ checking a virtual server that uses 'host headers' you must supply the FQDN
+ (fully qualified domain name) as the [host_name] argument.
+
+ This plugin can also check whether an SSL enabled web server is able to
+ serve content (optionally within a specified time) or whether the X509
+ certificate is still valid for the specified number of days.
+
+ Please note that this plugin does not check if the presented server
+ certificate matches the hostname of the server, or if the certificate
+ has a valid chain of trust to one of the locally installed CAs.
+
+Examples:
+ CHECK CONTENT: check_http -w 5 -c 10 --ssl -H www.verisign.com
+
+ When the 'www.verisign.com' server returns its content within 5 seconds,
+ a STATE_OK will be returned. When the server returns its content but exceeds
+ the 5-second threshold, a STATE_WARNING will be returned. When an error occurs,
+ a STATE_CRITICAL will be returned.
+
+ CHECK CERTIFICATE: check_http -H www.verisign.com -C 14
+
+ When the certificate of 'www.verisign.com' is valid for more than 14 days,
+ a STATE_OK is returned. When the certificate is still valid, but for less than
+ 14 days, a STATE_WARNING is returned. A STATE_CRITICAL will be returned when
+ the certificate is expired.
+
+ CHECK CERTIFICATE: check_http -H www.verisign.com -C 30,14
+
+ When the certificate of 'www.verisign.com' is valid for more than 30 days,
+ a STATE_OK is returned. When the certificate is still valid, but for less than
+ 30 days, but more than 14 days, a STATE_WARNING is returned.
+ A STATE_CRITICAL will be returned when certificate expires in less than 14 days
