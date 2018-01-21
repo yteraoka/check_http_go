@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -64,8 +65,16 @@ func genTlsConfig(opts Options) (*tls.Config) {
 	return conf
 }
 
+func prettyPrintJSON(b []byte) ([]byte, error) {
+	var out bytes.Buffer
+	err := json.Indent(&out, b, "", "    ")
+	return out.Bytes(), err
+}
+
 func main() {
 	var opts Options
+	var result_message string
+	var additional_out []byte
 	scheme := "http"
 	_, err := flags.Parse(&opts)
 	if err != nil {
@@ -149,8 +158,10 @@ func main() {
 	if opts.Expect == "" {
 		if resp.StatusCode >= 500 {
 			nagios_status = NagiosCritical
+			result_message = fmt.Sprintf("Unexpected http status code: %d", resp.StatusCode)
 		} else if resp.StatusCode >= 400 {
 			nagios_status = NagiosWarning
+			result_message = fmt.Sprintf("Unexpected http status code: %d", resp.StatusCode)
 		}
 	} else {
 		nagios_status = NagiosWarning
@@ -158,6 +169,9 @@ func main() {
 			if status_text == expect {
 				nagios_status = NagiosOk
 			}
+		}
+		if nagios_status == NagiosWarning {
+			result_message = fmt.Sprintf("Unexpected http status code: %d", resp.StatusCode)
 		}
 	}
 
@@ -175,14 +189,18 @@ func main() {
 		v, _ := dyno.Get(d, s...)
 		if v != opts.JsonValue {
 			nagios_status = NagiosCritical
+			result_message = fmt.Sprintf("`%s` is not `%s`", opts.JsonKey, opts.JsonValue)
 		}
+		additional_out, err = prettyPrintJSON(buf)
 	}
 
 	if nagios_status == NagiosOk {
 		if diff.Seconds() > opts.Crit {
 			nagios_status = NagiosCritical
+			result_message = fmt.Sprintf("response time %3.fs exceeded critical threshold %.3fs", diff.Seconds(), opts.Crit)
 		} else if diff.Seconds() > opts.Warn {
 			nagios_status = NagiosWarning
+			result_message = fmt.Sprintf("response time %3.fs exceeded warning threshold %.3fs", diff.Seconds(), opts.Warn)
 		}
 	}
 
@@ -193,5 +211,11 @@ func main() {
 		result_str = "CRITICAL"
 	}
 	fmt.Printf("HTTP %s: %s %s - %d bytes in %.3f second response time |time=%.6fs;;;%.6f size=%dB;;;0\n", result_str, resp.Proto, resp.Status, size, diff.Seconds(), diff.Seconds(), 0.0, size)
+	if result_message != "" {
+		fmt.Println(result_message)
+	}
+	if len(additional_out) > 0 {
+		fmt.Printf("\n%s", additional_out)
+	}
 	os.Exit(nagios_status)
 }
