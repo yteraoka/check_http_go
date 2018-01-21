@@ -39,6 +39,7 @@ type Options struct {
 	UserAgent string  `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
 	ClientCertFile string `short:"J" long:"client-cert" description:"Client Certificate File"`
 	PrivateKeyFile string `short:"K" long:"private-key" description:"Private Key File"`
+	Version   bool    `long:"version" description:"Print version"`
 }
 
 const (
@@ -46,6 +47,7 @@ const (
 	NagiosWarning  = 1
 	NagiosCritical = 2
 	NagiosUnknown  = 3
+	Version = "0.1"
 )
 
 func genTlsConfig(opts Options) (*tls.Config) {
@@ -80,6 +82,12 @@ func main() {
 	if err != nil {
 		os.Exit(NagiosUnknown)
 	}
+
+	if opts.Version {
+		fmt.Printf("check_http_go: %s\n", Version)
+		os.Exit(0)
+	}
+
 	if opts.Ipaddr == "" && opts.Vhost != "" {
 		opts.Ipaddr = opts.Vhost
 	}
