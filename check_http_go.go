@@ -78,7 +78,6 @@ func main() {
 	scheme := "http"
 	_, err := flags.Parse(&opts)
 	if err != nil {
-		fmt.Print(err)
 		os.Exit(NagiosUnknown)
 	}
 	if opts.Ipaddr == "" && opts.Vhost != "" {
