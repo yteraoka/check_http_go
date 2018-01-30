@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"github.com/icza/dyno"
 	flags "github.com/jessevdk/go-flags"
+	"golang.org/x/net/http2"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"golang.org/x/net/http2"
 	"net/url"
 	"os"
 	"strconv"
@@ -23,23 +23,24 @@ import (
 // https://qiita.com/t-mochizuki/items/4ffc478fedae7b776805
 
 type Options struct {
-	Verbose   bool    `short:"v" long:"verbose"    description:"Show verbose debug information"`
-	Vhost     string  `short:"H" long:"vhost"      description:"Host header"`
-	Ipaddr    string  `short:"I" long:"ipaddr"     description:"IP address"`
-	Port      int     `short:"p" long:"port"       description:"TCP Port" default:"0"`
-	Warn      float64 `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
-	Crit      float64 `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
-	Timeout   int     `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
-	Uri       string  `short:"u" long:"uri"        description:"URI" default:"/"`
-	Ssl       bool    `short:"S" long:"ssl"        description:"Enable TLS"`
-	Expect    string  `short:"e" long:"expect"     description:"Expected status codes (csv)" default:""`
-	JsonKey   string  `long:"json-key"   description:"JSON key "`
-	JsonValue string  `long:"json-value" description:"Expected json value"`
-	Method    string  `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
-	UserAgent string  `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
-	ClientCertFile string `short:"J" long:"client-cert" description:"Client Certificate File"`
-	PrivateKeyFile string `short:"K" long:"private-key" description:"Private Key File"`
-	Version   bool    `long:"version" description:"Print version"`
+	Verbose        bool     `short:"v" long:"verbose"    description:"Show verbose debug information"`
+	Vhost          string   `short:"H" long:"vhost"      description:"Host header"`
+	Ipaddr         string   `short:"I" long:"ipaddr"     description:"IP address"`
+	Port           int      `short:"p" long:"port"       description:"TCP Port" default:"0"`
+	Warn           float64  `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
+	Crit           float64  `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
+	Headers        []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
+	Timeout        int      `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
+	Uri            string   `short:"u" long:"uri"        description:"URI" default:"/"`
+	Ssl            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
+	Expect         string   `short:"e" long:"expect"     description:"Expected status codes (csv)" default:""`
+	JsonKey        string   `long:"json-key"   description:"JSON key "`
+	JsonValue      string   `long:"json-value" description:"Expected json value"`
+	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
+	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
+	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
+	PrivateKeyFile string   `short:"K" long:"private-key" description:"Private Key File"`
+	Version        bool     `long:"version" description:"Print version"`
 }
 
 const (
@@ -47,10 +48,10 @@ const (
 	NagiosWarning  = 1
 	NagiosCritical = 2
 	NagiosUnknown  = 3
-	Version = "0.1"
+	Version        = "0.2"
 )
 
-func genTlsConfig(opts Options) (*tls.Config) {
+func genTlsConfig(opts Options) *tls.Config {
 	conf := &tls.Config{}
 
 	conf.InsecureSkipVerify = true
@@ -76,6 +77,7 @@ func prettyPrintJSON(b []byte) ([]byte, error) {
 func main() {
 	var opts Options
 	var result_message string
+	var host_header string
 	var additional_out []byte
 	scheme := "http"
 	_, err := flags.Parse(&opts)
@@ -93,6 +95,10 @@ func main() {
 	}
 	if opts.Ipaddr == "" {
 		os.Exit(NagiosUnknown)
+	}
+	host_header = opts.Ipaddr
+	if opts.Vhost != "" {
+		host_header = opts.Vhost
 	}
 	if opts.Port == 0 {
 		if opts.Ssl {
@@ -133,7 +139,13 @@ func main() {
 		os.Exit(NagiosUnknown)
 	}
 
+	req.Host = host_header
 	req.Header.Set("User-Agent", opts.UserAgent)
+
+	for _, header := range opts.Headers {
+		hdr := strings.SplitN(header, ": ", 2)
+		req.Header.Set(hdr[0], hdr[1])
+	}
 
 	t1 := time.Now()
 
