@@ -76,6 +76,7 @@ func prettyPrintJSON(b []byte) ([]byte, error) {
 func main() {
 	var opts Options
 	var result_message string
+	var host_header string
 	var additional_out []byte
 	scheme := "http"
 	_, err := flags.Parse(&opts)
@@ -93,6 +94,10 @@ func main() {
 	}
 	if opts.Ipaddr == "" {
 		os.Exit(NagiosUnknown)
+	}
+	host_header = opts.Ipaddr
+	if opts.Vhost != "" {
+		host_header = opts.Vhost
 	}
 	if opts.Port == 0 {
 		if opts.Ssl {
@@ -133,6 +138,7 @@ func main() {
 		os.Exit(NagiosUnknown)
 	}
 
+	req.Host = host_header
 	req.Header.Set("User-Agent", opts.UserAgent)
 
 	t1 := time.Now()
