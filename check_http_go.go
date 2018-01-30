@@ -48,7 +48,7 @@ const (
 	NagiosWarning  = 1
 	NagiosCritical = 2
 	NagiosUnknown  = 3
-	Version        = "0.1"
+	Version        = "0.2"
 )
 
 func genTlsConfig(opts Options) *tls.Config {
