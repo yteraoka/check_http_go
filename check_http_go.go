@@ -29,6 +29,7 @@ type Options struct {
 	Port      int     `short:"p" long:"port"       description:"TCP Port" default:"0"`
 	Warn      float64 `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
 	Crit      float64 `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
+	Headers   []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
 	Timeout   int     `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
 	Uri       string  `short:"u" long:"uri"        description:"URI" default:"/"`
 	Ssl       bool    `short:"S" long:"ssl"        description:"Enable TLS"`
@@ -140,6 +141,11 @@ func main() {
 
 	req.Host = host_header
 	req.Header.Set("User-Agent", opts.UserAgent)
+
+	for _, header := range opts.Headers {
+		hdr := strings.SplitN(header, ": ", 2)
+		req.Header.Set(hdr[0], hdr[1])
+	}
 
 	t1 := time.Now()
 
