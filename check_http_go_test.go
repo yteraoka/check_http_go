@@ -223,8 +223,6 @@ func TestConnectionRefused(t *testing.T) {
 }
 
 func TestTLS(t *testing.T) {
-	t.Skip("-S is ignored when -p is specified (#9)")
-
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.EnableHTTP2 = true
 	srv.StartTLS()
@@ -232,6 +230,15 @@ func TestTLS(t *testing.T) {
 
 	code, out := runCheck(t, append(serverArgs(t, srv), "-S")...)
 	assertResult(t, code, out, NagiosOk, "HTTP OK: HTTP/2.0 200 OK")
+}
+
+// -S with -p must not fall back to plain HTTP (#9)
+func TestTLSAgainstPlainHTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+
+	code, out := runCheck(t, append(serverArgs(t, srv), "-S")...)
+	assertResult(t, code, out, NagiosCritical, "HTTP CRITICAL - ")
 }
 
 func TestPerfData(t *testing.T) {
