@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -48,8 +49,21 @@ const (
 	NagiosWarning  = 1
 	NagiosCritical = 2
 	NagiosUnknown  = 3
-	Version        = "0.2"
 )
+
+// version is set at build time with -ldflags "-X main.version=..."
+var version = "dev"
+
+// getVersion falls back to the module version embedded by `go install ...@vX.Y.Z`
+func getVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
 
 func genTlsConfig(opts Options) *tls.Config {
 	conf := &tls.Config{}
@@ -86,7 +100,7 @@ func main() {
 	}
 
 	if opts.Version {
-		fmt.Printf("check_http_go: %s\n", Version)
+		fmt.Printf("check_http_go: %s\n", getVersion())
 		os.Exit(0)
 	}
 
