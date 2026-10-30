@@ -143,8 +143,12 @@ func main() {
 	req.Header.Set("User-Agent", opts.UserAgent)
 
 	for _, header := range opts.Headers {
-		hdr := strings.SplitN(header, ": ", 2)
-		req.Header.Set(hdr[0], hdr[1])
+		name, value, ok := strings.Cut(header, ":")
+		if !ok {
+			fmt.Printf("HTTP UNKNOWN - invalid header: %s\n", header)
+			os.Exit(NagiosUnknown)
+		}
+		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
 	}
 
 	t1 := time.Now()
