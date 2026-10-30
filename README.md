@@ -6,7 +6,9 @@ Nagios plugin to check HTTP written in go. This program can check value of JSON 
 Install
 -------
 
-Requires Go 1.26 or later.
+Download a binary for your platform from [Releases](https://github.com/yteraoka/check_http_go/releases).
+
+Or install with Go 1.26 or later:
 
 ```
 go install github.com/yteraoka/check_http_go@latest
@@ -67,4 +69,18 @@ use `--json-key` and `--json-value`
 
 ```
 check_http_go ... --json-key=xxx.status --json-value=ok
+```
+
+Development
+-----------
+
+```
+go test ./...
+```
+
+Releases are built by [GoReleaser](https://goreleaser.com/) on GitHub Actions when a `v*` tag is pushed.
+
+```
+git tag v0.3.0
+git push origin v0.3.0
 ```
