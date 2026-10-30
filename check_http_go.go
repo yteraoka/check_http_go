@@ -216,10 +216,10 @@ func main() {
 	if nagios_status == NagiosOk {
 		if diff.Seconds() > opts.Crit {
 			nagios_status = NagiosCritical
-			result_message = fmt.Sprintf("response time %3.fs exceeded critical threshold %.3fs", diff.Seconds(), opts.Crit)
+			result_message = fmt.Sprintf("response time %.3fs exceeded critical threshold %.3fs", diff.Seconds(), opts.Crit)
 		} else if diff.Seconds() > opts.Warn {
 			nagios_status = NagiosWarning
-			result_message = fmt.Sprintf("response time %3.fs exceeded warning threshold %.3fs", diff.Seconds(), opts.Warn)
+			result_message = fmt.Sprintf("response time %.3fs exceeded warning threshold %.3fs", diff.Seconds(), opts.Warn)
 		}
 	}
 
