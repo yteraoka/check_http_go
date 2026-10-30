@@ -3,6 +3,23 @@ check_http_go
 
 Nagios plugin to check HTTP written in go. This program can check value of JSON in HTTP response body.
 
+Install
+-------
+
+Requires Go 1.26 or later.
+
+```
+go install github.com/yteraoka/check_http_go@latest
+```
+
+Or build from source:
+
+```
+git clone https://github.com/yteraoka/check_http_go.git
+cd check_http_go
+go build
+```
+
 Usage
 -----
 
