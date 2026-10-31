@@ -5,9 +5,9 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"github.com/icza/dyno"
 	flags "github.com/jessevdk/go-flags"
 	"golang.org/x/net/http2"
+	"io"
 	"io/ioutil"
 	"maps"
 	"net/http"
@@ -36,8 +36,8 @@ type Options struct {
 	Uri            string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	Ssl            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
-	JsonKey        string   `long:"json-key"   description:"JSON key "`
-	JsonValue      string   `long:"json-value" description:"Expected json value"`
+	JsonKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
+	JsonValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
 	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
 	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
 	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
@@ -119,6 +119,59 @@ func matchExpect(expect string, proto string, status string, code int) bool {
 	return false
 }
 
+// parseJSON decodes the body keeping numbers as written (e.g. 1.50, big integers)
+func parseJSON(b []byte) (interface{}, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var v interface{}
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("unexpected data after the JSON value")
+	}
+	return v, nil
+}
+
+// lookupJSON follows the dot separated key. Object members are looked up by
+// name and array elements by index (e.g. "items.0.status").
+func lookupJSON(v interface{}, key string) (interface{}, bool) {
+	for _, k := range strings.Split(key, ".") {
+		switch node := v.(type) {
+		case map[string]interface{}:
+			child, ok := node[k]
+			if !ok {
+				return nil, false
+			}
+			v = child
+		case []interface{}:
+			i, err := strconv.Atoi(k)
+			if err != nil || i < 0 || i >= len(node) {
+				return nil, false
+			}
+			v = node[i]
+		default:
+			return nil, false
+		}
+	}
+	return v, true
+}
+
+// jsonValueString returns the value in the form given to --json-value: strings
+// as they are and other values as JSON (e.g. 1, true, null, {"a":1})
+func jsonValueString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	// keep <, > and & as they are instead of \u003c etc.
+	enc.SetEscapeHTML(false)
+	// values decoded by parseJSON can always be encoded
+	_ = enc.Encode(v)
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
 func prettyPrintJSON(b []byte) ([]byte, error) {
 	var out bytes.Buffer
 	err := json.Indent(&out, b, "", "    ")
@@ -131,7 +184,8 @@ func main() {
 	var host_header string
 	var additional_out []byte
 	scheme := "http"
-	_, err := flags.Parse(&opts)
+	parser := flags.NewParser(&opts, flags.Default)
+	_, err := parser.Parse()
 	if err != nil {
 		os.Exit(NagiosUnknown)
 	}
@@ -146,6 +200,14 @@ func main() {
 	}
 	if opts.Ipaddr == "" {
 		unknown("-H or -I is required")
+	}
+	// IsSet is used instead of comparing with "" so that an empty --json-value can be checked
+	jsonCheck := parser.FindOptionByLongName("json-key").IsSet()
+	if jsonCheck != parser.FindOptionByLongName("json-value").IsSet() {
+		unknown("--json-key and --json-value must be specified together")
+	}
+	if jsonCheck && opts.JsonKey == "" {
+		unknown("--json-key must not be empty")
 	}
 	if opts.Warn > opts.Crit {
 		unknown("warning threshold %.3fs must not be greater than critical threshold %.3fs", opts.Warn, opts.Crit)
@@ -255,22 +317,19 @@ func main() {
 		fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
 	}
 
-	if opts.JsonKey != "" && opts.JsonValue != "" {
-		// https://stackoverflow.com/questions/27689058/convert-string-to-interface
-		t := strings.Split(opts.JsonKey, ".")
-		s := make([]interface{}, len(t))
-		for i, v := range t {
-			s[i] = v
+	if jsonCheck {
+		if d, err := parseJSON(buf); err != nil {
+			fail(NagiosCritical, "response body is not valid JSON: %s", err)
+		} else {
+			if v, ok := lookupJSON(d, opts.JsonKey); !ok {
+				fail(NagiosCritical, "`%s` is not found in the response body", opts.JsonKey)
+			} else if actual := jsonValueString(v); actual != opts.JsonValue {
+				fail(NagiosCritical, "`%s` is not `%s` (actual: `%s`)", opts.JsonKey, opts.JsonValue, actual)
+			}
+			if out, err := prettyPrintJSON(buf); err == nil {
+				additional_out = out
+			}
 		}
-		// https://reformatcode.com/code/json/taking-a-json-string-unmarshaling-it-into-a-mapstringinterface-editing-and-marshaling-it-into-a-byte-seems-more-complicated-then-it-should-be
-		var d map[string]interface{}
-		json.Unmarshal(buf, &d)
-		// https://qiita.com/hnakamur/items/c3560a4b780487ef6065
-		v, _ := dyno.Get(d, s...)
-		if v != opts.JsonValue {
-			fail(NagiosCritical, "`%s` is not `%s`", opts.JsonKey, opts.JsonValue)
-		}
-		additional_out, err = prettyPrintJSON(buf)
 	}
 
 	if diff.Seconds() > opts.Crit {
