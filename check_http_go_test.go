@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -109,6 +114,60 @@ func TestStatusCode(t *testing.T) {
 	}
 }
 
+func TestRedirect(t *testing.T) {
+	hosts := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /r/N redirects N times before 200
+		n, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/r/"))
+		if n > 0 {
+			http.Redirect(w, r, fmt.Sprintf("/r/%d", n-1), http.StatusFound)
+			return
+		}
+		hosts <- r.Host
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"ok by default", []string{"-u", "/r/1"}, NagiosOk, "HTTP OK: HTTP/1.1 302 Found"},
+		{"ok", []string{"-u", "/r/1", "-f", "ok"}, NagiosOk, "HTTP OK: HTTP/1.1 302 Found"},
+		{"warning", []string{"-u", "/r/1", "-f", "warning"}, NagiosWarning, "HTTP WARNING: HTTP/1.1 302 Found - redirected to `/r/0` - "},
+		{"critical", []string{"-u", "/r/1", "-f", "critical"}, NagiosCritical, "HTTP CRITICAL: HTTP/1.1 302 Found - redirected to `/r/0` - "},
+		// -e skips the redirect handling as check_http does
+		{"critical with -e", []string{"-u", "/r/1", "-f", "critical", "-e", "302"}, NagiosOk, "HTTP OK: HTTP/1.1 302 Found"},
+		{"follow", []string{"-u", "/r/3", "-f", "follow"}, NagiosOk, "HTTP OK: HTTP/1.1 200 OK"},
+		{"follow up to --max-redirs", []string{"-u", "/r/3", "-f", "follow", "--max-redirs", "3"}, NagiosOk, "HTTP OK: HTTP/1.1 200 OK"},
+		{"follow over --max-redirs", []string{"-u", "/r/3", "-f", "follow", "--max-redirs", "2"}, NagiosWarning, "HTTP WARNING: HTTP/1.1 302 Found - maximum redirection depth 2 exceeded - "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+			// drop the Host recorded when the request reached /r/0
+			select {
+			case <-hosts:
+			default:
+			}
+		})
+	}
+
+	t.Run("follow keeps the Host header for a relative location", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-u", "/r/1", "-f", "follow", "-H", "www.example.com")...)
+		assertResult(t, code, out, NagiosOk, "HTTP OK: HTTP/1.1 200 OK")
+		if got := receive(t, hosts); got != "www.example.com" {
+			t.Errorf("Host = %q, want www.example.com", got)
+		}
+	})
+	t.Run("sticky is not supported", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-f", "sticky")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - invalid -f: sticky (ok, warning, critical or follow)")
+	})
+}
+
 func TestRequest(t *testing.T) {
 	reqs := make(chan *http.Request, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,28 +218,75 @@ func TestRequest(t *testing.T) {
 func TestRequestBody(t *testing.T) {
 	type request struct {
 		method        string
+		contentType   string
 		contentLength string
 		body          string
 	}
 	reqs := make(chan request, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		reqs <- request{r.Method, r.Header.Get("Content-Length"), string(b)}
+		reqs <- request{r.Method, r.Header.Get("Content-Type"), r.Header.Get("Content-Length"), string(b)}
 	}))
 	defer srv.Close()
 
-	for _, tt := range []request{
-		{http.MethodGet, "", ""},
-		{http.MethodPost, "0", ""},
-	} {
-		t.Run(tt.method, func(t *testing.T) {
-			code, out := runCheck(t, append(serverArgs(t, srv), "-j", tt.method)...)
+	tests := []struct {
+		name string
+		args []string
+		want request
+	}{
+		{"GET", []string{"-j", "GET"}, request{http.MethodGet, "", "", ""}},
+		{"POST without body", []string{"-j", "POST"}, request{http.MethodPost, "", "0", ""}},
+		// -P sends POST unless -j is given
+		{"-P", []string{"-P", "a=1&b=2"}, request{http.MethodPost, "application/x-www-form-urlencoded", "7", "a=1&b=2"}},
+		{"-P with -T", []string{"-P", `{"a":1}`, "-T", "application/json"}, request{http.MethodPost, "application/json", "7", `{"a":1}`}},
+		{"-P with -j", []string{"-P", "a=1", "-j", "PUT"}, request{http.MethodPut, "application/x-www-form-urlencoded", "3", "a=1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
 			assertResult(t, code, out, NagiosOk, "HTTP OK")
-			if got := receive(t, reqs); got != tt {
-				t.Errorf("request = %+v, want %+v", got, tt)
+			if got := receive(t, reqs); got != tt.want {
+				t.Errorf("request = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
+
+	t.Run("-T without -P", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-T", "application/json")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - -T requires -P")
+	})
+}
+
+func TestBasicAuth(t *testing.T) {
+	type credentials struct {
+		user, password string
+		ok             bool
+	}
+	creds := make(chan credentials, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		creds <- credentials{user, password, ok}
+	}))
+	defer srv.Close()
+
+	t.Run("password with colon", func(t *testing.T) {
+		code, stdout, stderr := runCheckWithStderr(t, append(serverArgs(t, srv), "-a", "user:pa:ss", "-v")...)
+		assertResult(t, code, stdout, NagiosOk, "HTTP OK")
+		if got, want := receive(t, creds), (credentials{"user", "pa:ss", true}); got != want {
+			t.Errorf("credentials = %+v, want %+v", got, want)
+		}
+		// the credentials are masked in the --verbose output
+		if !strings.Contains(stderr, "> Authorization: Basic ********\n") || strings.Contains(stderr, "dXNlcjpwYTpzcw==") {
+			t.Errorf("Authorization header is not masked\nstderr:\n%s", stderr)
+		}
+	})
+	t.Run("no colon", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-a", "secret")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - -a must be in the form of username:password")
+		if strings.Contains(out, "secret") {
+			t.Errorf("output contains the credentials\noutput:\n%s", out)
+		}
+	})
 }
 
 func TestBuildURL(t *testing.T) {
@@ -260,6 +366,44 @@ func TestIPv6(t *testing.T) {
 	}
 }
 
+func TestAddressFamily(t *testing.T) {
+	srv4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv4.Close()
+	port4 := fmt.Sprint(srv4.Listener.Addr().(*net.TCPAddr).Port)
+
+	type testCase struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}
+	tests := []testCase{
+		{"-4 resolves the host name to IPv4", []string{"-I", "localhost", "-p", port4, "-4"}, NagiosOk, "HTTP OK"},
+		{"-6 with an IPv4 address", []string{"-I", "127.0.0.1", "-p", port4, "-6"}, NagiosCritical, "HTTP CRITICAL - "},
+		{"-4 and -6", []string{"-I", "127.0.0.1", "-p", port4, "-4", "-6"}, NagiosUnknown, "HTTP UNKNOWN - -4 and -6 cannot be specified together"},
+	}
+	if l, err := net.Listen("tcp6", "[::1]:0"); err == nil {
+		srv6 := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		if err := srv6.Listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		srv6.Listener = l
+		srv6.Start()
+		defer srv6.Close()
+		port6 := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
+		tests = append(tests,
+			testCase{"-6 with an IPv6 address", []string{"-I", "::1", "-p", port6, "-6"}, NagiosOk, "HTTP OK"},
+			testCase{"-4 with an IPv6 address", []string{"-I", "::1", "-p", port6, "-4"}, NagiosCritical, "HTTP CRITICAL - "},
+		)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, tt.args...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
+}
+
 // the port in -H is used to connect to unless -I or -p is given, as check_http does (#12)
 func TestVhostWithPort(t *testing.T) {
 	type request struct{ host, uri string }
@@ -293,6 +437,69 @@ func TestVhostWithPort(t *testing.T) {
 		code, out := runCheck(t, "-H", "www.example.com:http")
 		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - invalid port in -H: www.example.com:http")
 	})
+}
+
+func TestBodyMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "Hello, World\nstatus: OK\n")
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"string found", []string{"-s", "World"}, NagiosOk, "HTTP OK"},
+		{"string not found", []string{"-s", "world"}, NagiosCritical, "string `world` not found in the response body"},
+		{"regex found", []string{"-r", "status: (OK|FINE)"}, NagiosOk, "HTTP OK"},
+		{"regex matches a line", []string{"-r", "^status: OK$"}, NagiosOk, "HTTP OK"},
+		{"regex not found", []string{"-r", "status: NG"}, NagiosCritical, "pattern `status: NG` not found in the response body"},
+		{"regex is case-sensitive", []string{"-r", "STATUS: OK"}, NagiosCritical, "pattern `STATUS: OK` not found in the response body"},
+		{"case-insensitive regex found", []string{"-R", "STATUS: ok"}, NagiosOk, "HTTP OK"},
+		{"case-insensitive regex not found", []string{"-R", "status: ng"}, NagiosCritical, "pattern `status: ng` not found in the response body"},
+		{"inverted regex not found", []string{"-r", "error", "--invert-regex"}, NagiosOk, "HTTP OK"},
+		{"inverted regex found", []string{"-R", "WORLD", "--invert-regex"}, NagiosCritical, "pattern `WORLD` found in the response body"},
+		{"invalid regex", []string{"-r", "("}, NagiosUnknown, "HTTP UNKNOWN - invalid regular expression: "},
+		{"-r and -R", []string{"-r", "a", "-R", "b"}, NagiosUnknown, "HTTP UNKNOWN - -r and -R cannot be specified together"},
+		{"--invert-regex without regex", []string{"--invert-regex"}, NagiosUnknown, "HTTP UNKNOWN - --invert-regex requires -r or -R"},
+		{"string and regex", []string{"-s", "world", "-r", "NG"}, NagiosCritical, "string `world` not found in the response body; pattern `NG` not found in the response body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
+}
+
+func TestPageSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "0123456789")
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		size     string
+		wantCode int
+		wantOut  string
+	}{
+		{"min", "10", NagiosOk, "HTTP OK"},
+		{"min:max", "5:10", NagiosOk, "HTTP OK"},
+		{"too small", "11", NagiosWarning, "page size 10 too small (minimum 11)"},
+		{"too large", "1:9", NagiosWarning, "page size 10 too large (maximum 9)"},
+		{"invalid", "a", NagiosUnknown, "HTTP UNKNOWN - invalid -m: a"},
+		{"invalid max", "1:b", NagiosUnknown, "HTTP UNKNOWN - invalid -m: 1:b"},
+		{"min greater than max", "10:5", NagiosUnknown, "HTTP UNKNOWN - invalid -m: 10:5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), "-m", tt.size)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
 }
 
 func TestJSON(t *testing.T) {
@@ -456,8 +663,17 @@ func TestTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	code, out := runCheck(t, append(serverArgs(t, srv), "-t", "1")...)
-	assertResult(t, code, out, NagiosCritical, "HTTP CRITICAL - ")
+	for _, timeout := range []string{"1", "0.5"} {
+		t.Run(timeout, func(t *testing.T) {
+			start := time.Now()
+			code, out := runCheck(t, append(serverArgs(t, srv), "-t", timeout)...)
+			assertResult(t, code, out, NagiosCritical, "HTTP CRITICAL - ")
+			want, _ := strconv.ParseFloat(timeout, 64)
+			if elapsed := time.Since(start).Seconds(); elapsed < want || elapsed > want+0.5 {
+				t.Errorf("elapsed %.3fs, want about %ss", elapsed, timeout)
+			}
+		})
+	}
 }
 
 func TestConnectionRefused(t *testing.T) {
@@ -584,6 +800,91 @@ func TestClientCert(t *testing.T) {
 	}
 }
 
+// newTLSServerWithExpiry starts a TLS server with a self-signed certificate for
+// www.example.com and 127.0.0.1 that expires at notAfter
+func newTLSServerWithExpiry(t *testing.T, notAfter time.Time, handler http.Handler) *httptest.Server {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "www.example.com"},
+		NotBefore:    notAfter.Add(-365 * 24 * time.Hour),
+		NotAfter:     notAfter,
+		DNSNames:     []string{"www.example.com"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	return srv
+}
+
+func TestCertificateExpiry(t *testing.T) {
+	requests := make(chan struct{}, 1)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+	})
+	// an extra hour so that the days left are exactly 10 while the test runs
+	in10Days := time.Now().Add(10*24*time.Hour + time.Hour).Truncate(time.Second)
+	expiring := newTLSServerWithExpiry(t, in10Days, handler)
+	defer expiring.Close()
+	yesterday := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	expired := newTLSServerWithExpiry(t, yesterday, handler)
+	defer expired.Close()
+	format := func(tm time.Time) string { return tm.UTC().Format("2006-01-02 15:04 -0700") }
+
+	tests := []struct {
+		name        string
+		srv         *httptest.Server
+		args        []string
+		wantCode    int
+		wantOut     string
+		wantRequest bool
+	}{
+		// -C implies -S and checks only the certificate as check_http does
+		{"ok", expiring, []string{"-C", "5"}, NagiosOk,
+			"SSL OK - Certificate 'www.example.com' will expire on " + format(in10Days) + ".\n", false},
+		{"warning", expiring, []string{"-C", "30"}, NagiosWarning,
+			"SSL WARNING - Certificate 'www.example.com' expires in 10 day(s) (" + format(in10Days) + ").\n", false},
+		{"critical", expiring, []string{"-C", "30,14"}, NagiosCritical,
+			"SSL CRITICAL - Certificate 'www.example.com' expires in 10 day(s) (" + format(in10Days) + ").\n", false},
+		{"expired", expired, []string{"-C", "30"}, NagiosCritical,
+			"SSL CRITICAL - Certificate 'www.example.com' expired on " + format(yesterday) + ".\n", false},
+		// --continue-after-certificate checks the URL as well
+		{"continue ok", expiring, []string{"-C", "5", "--continue-after-certificate"}, NagiosOk,
+			"HTTP OK: HTTP/1.1 200 OK - 0 bytes in ", true},
+		{"continue warning", expiring, []string{"-C", "30", "--continue-after-certificate"}, NagiosWarning,
+			"HTTP WARNING: HTTP/1.1 200 OK - Certificate 'www.example.com' expires in 10 day(s) (" + format(in10Days) + ") - 0 bytes in ", true},
+		{"invalid", expiring, []string{"-C", "a"}, NagiosUnknown, "HTTP UNKNOWN - invalid -C: a", false},
+		{"critical greater than warning", expiring, []string{"-C", "14,30"}, NagiosUnknown, "HTTP UNKNOWN - invalid -C: 14,30", false},
+		{"--continue-after-certificate without -C", expiring, []string{"-S", "--continue-after-certificate"}, NagiosUnknown,
+			"HTTP UNKNOWN - --continue-after-certificate requires -C", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, tt.srv), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+			select {
+			case <-requests:
+				if !tt.wantRequest {
+					t.Error("the URL was requested")
+				}
+			default:
+				if tt.wantRequest {
+					t.Error("the URL was not requested")
+				}
+			}
+		})
+	}
+}
+
 func TestVerifyCert(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()
@@ -636,6 +937,7 @@ func TestPerfData(t *testing.T) {
 	}{
 		{"default", nil, `time=[0-9.]+s;5\.000000;10\.000000;0\.000000;10\.000000 size=5B;;;0`},
 		{"thresholds", []string{"-w", "1.5", "-c", "3", "-t", "4"}, `time=[0-9.]+s;1\.500000;3\.000000;0\.000000;4\.000000 size=5B;;;0`},
+		{"decimal timeout", []string{"-t", "2.5"}, `time=[0-9.]+s;5\.000000;10\.000000;0\.000000;2\.500000 size=5B;;;0`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
