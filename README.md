@@ -32,7 +32,7 @@ Usage:
   check_http_go [OPTIONS]
 
 Application Options:
-  -v, --verbose      Show verbose debug information
+  -v, --verbose      Show verbose debug information to stderr
   -H, --vhost=       Host header
   -I, --ipaddr=      IP address
   -p, --port=        TCP Port (default: 0)
