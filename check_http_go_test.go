@@ -109,6 +109,62 @@ func TestStatusCode(t *testing.T) {
 	}
 }
 
+func TestRedirect(t *testing.T) {
+	hosts := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /r/N redirects N times before 200
+		n, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/r/"))
+		if n > 0 {
+			http.Redirect(w, r, fmt.Sprintf("/r/%d", n-1), http.StatusFound)
+			return
+		}
+		hosts <- r.Host
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"ok by default", []string{"-u", "/r/1"}, NagiosOk, "HTTP OK: HTTP/1.1 302 Found"},
+		{"ok", []string{"-u", "/r/1", "-f", "ok"}, NagiosOk, "HTTP OK: HTTP/1.1 302 Found"},
+		{"warning", []string{"-u", "/r/1", "-f", "warning"}, NagiosWarning, "HTTP WARNING: HTTP/1.1 302 Found - redirected to `/r/0` - "},
+		{"critical", []string{"-u", "/r/1", "-f", "critical"}, NagiosCritical, "HTTP CRITICAL: HTTP/1.1 302 Found - redirected to `/r/0` - "},
+		// -e skips the redirect handling as check_http does
+		{"critical with -e", []string{"-u", "/r/1", "-f", "critical", "-e", "302"}, NagiosOk, "HTTP OK: HTTP/1.1 302 Found"},
+		{"follow", []string{"-u", "/r/3", "-f", "follow"}, NagiosOk, "HTTP OK: HTTP/1.1 200 OK"},
+		{"follow up to --max-redirs", []string{"-u", "/r/3", "-f", "follow", "--max-redirs", "3"}, NagiosOk, "HTTP OK: HTTP/1.1 200 OK"},
+		{"follow over --max-redirs", []string{"-u", "/r/3", "-f", "follow", "--max-redirs", "2"}, NagiosWarning, "HTTP WARNING: HTTP/1.1 302 Found - maximum redirection depth 2 exceeded - "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+			// drop the Host recorded when the request reached /r/0
+			select {
+			case <-hosts:
+			default:
+			}
+		})
+	}
+
+	t.Run("follow keeps the Host header for a relative location", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-u", "/r/1", "-f", "follow", "-H", "www.example.com")...)
+		assertResult(t, code, out, NagiosOk, "HTTP OK: HTTP/1.1 200 OK")
+		if got := receive(t, hosts); got != "www.example.com" {
+			t.Errorf("Host = %q, want www.example.com", got)
+		}
+	})
+	t.Run("sticky is not supported", func(t *testing.T) {
+		code, _ := runCheck(t, append(serverArgs(t, srv), "-f", "sticky")...)
+		if code != NagiosUnknown {
+			t.Errorf("exit code = %d, want %d", code, NagiosUnknown)
+		}
+	})
+}
+
 func TestRequest(t *testing.T) {
 	reqs := make(chan *http.Request, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

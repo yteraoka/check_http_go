@@ -38,6 +38,8 @@ type Options struct {
 	EregI          string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
 	InvertRegex    bool     `long:"invert-regex" description:"Return CRITICAL if the regular expression is found, OK if not"`
 	PageSize       string   `short:"m" long:"pagesize"   description:"Minimum page size required (bytes) : Maximum page size required (bytes)" value-name:"MIN[:MAX]"`
+	OnRedirect     string   `short:"f" long:"onredirect" description:"How to handle a redirect" choice:"ok" choice:"warning" choice:"critical" choice:"follow" default:"ok"`
+	MaxRedirs      int      `long:"max-redirs" description:"Maximal number of redirects with -f follow" default:"15"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
 	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
@@ -275,9 +277,13 @@ func newClient(cfg *config) (*http.Client, error) {
 	}
 	return &http.Client{
 		Timeout: time.Duration(cfg.Timeout * float64(time.Second)),
-		// a redirect is not followed and the 3xx response is checked
+		// a redirect is followed only with -f follow, otherwise the 3xx response is checked
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+			// via has the requests so far, so following this one makes len(via) redirects
+			if cfg.OnRedirect != "follow" || len(via) > cfg.MaxRedirs {
+				return http.ErrUseLastResponse
+			}
+			return nil
 		},
 		// Proxy is not set, so the environment variables like HTTP_PROXY are not used
 		Transport: &http.Transport{
@@ -436,12 +442,29 @@ func (r *result) fail(status int, format string, a ...interface{}) {
 	r.reasons = append(r.reasons, reasonEscaper.Replace(fmt.Sprintf(format, a...)))
 }
 
+// isRedirect reports whether http.Client follows the response
+func isRedirect(resp *http.Response) bool {
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return resp.Header.Get("Location") != ""
+	}
+	return false
+}
+
 func (r *result) checkStatus(cfg *config, resp *http.Response) {
+	// with -f follow, a redirect response is returned only when --max-redirs is exceeded
+	if cfg.OnRedirect == "follow" && isRedirect(resp) {
+		r.fail(NagiosWarning, "maximum redirection depth %d exceeded", cfg.MaxRedirs)
+	}
 	if cfg.Expect == "" {
 		if resp.StatusCode >= 500 {
 			r.fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
 		} else if resp.StatusCode >= 400 {
 			r.fail(NagiosWarning, "Unexpected http status code: %d", resp.StatusCode)
+		} else if isRedirect(resp) && cfg.OnRedirect == "warning" {
+			r.fail(NagiosWarning, "redirected to `%s`", resp.Header.Get("Location"))
+		} else if isRedirect(resp) && cfg.OnRedirect == "critical" {
+			r.fail(NagiosCritical, "redirected to `%s`", resp.Header.Get("Location"))
 		}
 	} else if !matchExpect(cfg.Expect, resp.Proto, resp.Status, resp.StatusCode) {
 		// check_http returns CRITICAL when the status line does not match -e
