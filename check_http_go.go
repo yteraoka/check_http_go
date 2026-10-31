@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -33,6 +34,8 @@ type Options struct {
 	Timeout        float64  `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
 	URI            string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	SSL            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
+	UseIPv4        bool     `short:"4" long:"use-ipv4"   description:"Use IPv4 connection"`
+	UseIPv6        bool     `short:"6" long:"use-ipv6"   description:"Use IPv6 connection"`
 	String         string   `short:"s" long:"string"     description:"String to expect in the content"`
 	Regex          string   `short:"r" long:"regex"      description:"Regular expression (RE2 syntax) to search for in the content"`
 	EregI          string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
@@ -129,6 +132,9 @@ func parseArgs(args []string) (*config, error) {
 	}
 	if cfg.jsonCheck && cfg.JSONKey == "" {
 		return nil, errors.New("--json-key must not be empty")
+	}
+	if cfg.UseIPv4 && cfg.UseIPv6 {
+		return nil, errors.New("-4 and -6 cannot be specified together")
 	}
 	if cfg.Regex != "" && cfg.EregI != "" {
 		return nil, errors.New("-r and -R cannot be specified together")
@@ -275,6 +281,22 @@ func newClient(cfg *config) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Proxy is not set, so the environment variables like HTTP_PROXY are not used
+	tr := &http.Transport{
+		TLSClientConfig: tlsConfig,
+		// HTTP/2 is not enabled by default when TLSClientConfig is set
+		ForceAttemptHTTP2: true,
+	}
+	if cfg.UseIPv4 || cfg.UseIPv6 {
+		network := "tcp4"
+		if cfg.UseIPv6 {
+			network = "tcp6"
+		}
+		var dialer net.Dialer
+		tr.DialContext = func(ctx context.Context, _ string, addr string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, addr)
+		}
+	}
 	return &http.Client{
 		Timeout: time.Duration(cfg.Timeout * float64(time.Second)),
 		// a redirect is followed only with -f follow, otherwise the 3xx response is checked
@@ -285,12 +307,7 @@ func newClient(cfg *config) (*http.Client, error) {
 			}
 			return nil
 		},
-		// Proxy is not set, so the environment variables like HTTP_PROXY are not used
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-			// HTTP/2 is not enabled by default when TLSClientConfig is set
-			ForceAttemptHTTP2: true,
-		},
+		Transport: tr,
 	}, nil
 }
 

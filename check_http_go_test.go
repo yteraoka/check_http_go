@@ -363,6 +363,44 @@ func TestIPv6(t *testing.T) {
 	}
 }
 
+func TestAddressFamily(t *testing.T) {
+	srv4 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv4.Close()
+	port4 := fmt.Sprint(srv4.Listener.Addr().(*net.TCPAddr).Port)
+
+	type testCase struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}
+	tests := []testCase{
+		{"-4 resolves the host name to IPv4", []string{"-I", "localhost", "-p", port4, "-4"}, NagiosOk, "HTTP OK"},
+		{"-6 with an IPv4 address", []string{"-I", "127.0.0.1", "-p", port4, "-6"}, NagiosCritical, "HTTP CRITICAL - "},
+		{"-4 and -6", []string{"-I", "127.0.0.1", "-p", port4, "-4", "-6"}, NagiosUnknown, "HTTP UNKNOWN - -4 and -6 cannot be specified together"},
+	}
+	if l, err := net.Listen("tcp6", "[::1]:0"); err == nil {
+		srv6 := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		if err := srv6.Listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		srv6.Listener = l
+		srv6.Start()
+		defer srv6.Close()
+		port6 := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
+		tests = append(tests,
+			testCase{"-6 with an IPv6 address", []string{"-I", "::1", "-p", port6, "-6"}, NagiosOk, "HTTP OK"},
+			testCase{"-4 with an IPv6 address", []string{"-I", "::1", "-p", port6, "-4"}, NagiosCritical, "HTTP CRITICAL - "},
+		)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, tt.args...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
+}
+
 // the port in -H is used to connect to unless -I or -p is given, as check_http does (#12)
 func TestVhostWithPort(t *testing.T) {
 	type request struct{ host, uri string }
