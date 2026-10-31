@@ -78,6 +78,24 @@ func tlsServerName(host string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 }
 
+// hostHeader puts an IPv6 address in brackets for the Host header (e.g. [::1])
+func hostHeader(host string) string {
+	if strings.Contains(host, ":") && net.ParseIP(host) != nil {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+// buildURL puts an IPv6 address in brackets and makes sure that the URI starts with "/"
+func buildURL(scheme string, host string, port int, uri string) string {
+	// the zone of an IPv6 address (e.g. fe80::1%eth0) must be escaped in a URL
+	host = strings.Replace(host, "%", "%25", 1)
+	if !strings.HasPrefix(uri, "/") {
+		uri = "/" + uri
+	}
+	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port)) + uri
+}
+
 func genTlsConfig(opts Options, serverName string) *tls.Config {
 	conf := &tls.Config{
 		// http.Transport uses the URL host (the -I value) unless ServerName is set.
@@ -227,7 +245,19 @@ func main() {
 
 	if opts.Ipaddr == "" && opts.Vhost != "" {
 		opts.Ipaddr = opts.Vhost
+		// -H may have a port (e.g. example.com:5000), which is used to connect to
+		// unless -p is given, as check_http does
+		if host, port, err := net.SplitHostPort(opts.Vhost); err == nil {
+			opts.Ipaddr = host
+			if opts.Port == 0 {
+				if opts.Port, err = strconv.Atoi(port); err != nil {
+					unknown("invalid port in -H: %s", opts.Vhost)
+				}
+			}
+		}
 	}
+	// accept an IPv6 address in brackets (e.g. [::1]) as well
+	opts.Ipaddr = strings.TrimSuffix(strings.TrimPrefix(opts.Ipaddr, "["), "]")
 	if opts.Ipaddr == "" {
 		unknown("-H or -I is required")
 	}
@@ -245,9 +275,9 @@ func main() {
 	if opts.Warn > opts.Crit {
 		unknown("warning threshold %.3fs must not be greater than critical threshold %.3fs", opts.Warn, opts.Crit)
 	}
-	host_header = opts.Ipaddr
+	host_header = hostHeader(opts.Ipaddr)
 	if opts.Vhost != "" {
-		host_header = opts.Vhost
+		host_header = hostHeader(opts.Vhost)
 	}
 	if opts.Ssl {
 		scheme = "https"
@@ -280,7 +310,7 @@ func main() {
 		Transport: tr,
 	}
 
-	url_str := scheme + "://" + opts.Ipaddr + ":" + strconv.Itoa(opts.Port) + opts.Uri
+	url_str := buildURL(scheme, opts.Ipaddr, opts.Port, opts.Uri)
 
 	values := url.Values{}
 
