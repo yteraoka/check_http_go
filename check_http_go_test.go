@@ -57,6 +57,20 @@ func runCheckWithStderr(t *testing.T, args ...string) (int, string, string) {
 	return 0, string(out), stderr.String()
 }
 
+// receive waits for a value sent from a test server handler. It fails instead
+// of blocking forever when the check exits before sending a request.
+func receive[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("the test server did not receive a request")
+	}
+	var zero T
+	return zero
+}
+
 // serverArgs returns -I and -p arguments pointing to srv
 func serverArgs(t *testing.T, srv *httptest.Server) []string {
 	t.Helper()
@@ -127,7 +141,7 @@ func TestRequest(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		code, out := runCheck(t, serverArgs(t, srv)...)
 		assertResult(t, code, out, NagiosOk, "HTTP OK")
-		got := <-reqs
+		got := receive(t, reqs)
 		u, _ := url.Parse(srv.URL)
 		if got.Method != http.MethodGet || got.URL.Path != "/" || got.Host != u.Hostname() || got.UserAgent() != "check_http_go" {
 			t.Errorf("unexpected request: method=%s path=%s host=%s user-agent=%s", got.Method, got.URL.Path, got.Host, got.UserAgent())
@@ -145,7 +159,7 @@ func TestRequest(t *testing.T) {
 		)
 		code, out := runCheck(t, args...)
 		assertResult(t, code, out, NagiosOk, "HTTP OK")
-		got := <-reqs
+		got := receive(t, reqs)
 		if got.Method != http.MethodHead {
 			t.Errorf("method = %s, want HEAD", got.Method)
 		}
@@ -161,6 +175,118 @@ func TestRequest(t *testing.T) {
 		if got.Header.Get("X-Foo") != "bar" || got.Header.Get("X-Baz") != "qux" {
 			t.Errorf("headers = %v, want X-Foo: bar and X-Baz: qux", got.Header)
 		}
+	})
+}
+
+func TestBuildURL(t *testing.T) {
+	tests := []struct {
+		host string
+		port int
+		uri  string
+		want string
+	}{
+		{"127.0.0.1", 80, "/", "http://127.0.0.1:80/"},
+		{"::1", 8080, "/health", "http://[::1]:8080/health"},
+		// the zone of an IPv6 address is escaped
+		{"fe80::1%eth0", 80, "/", "http://[fe80::1%25eth0]:80/"},
+		// the URI always starts with "/"
+		{"127.0.0.1", 80, "health", "http://127.0.0.1:80/health"},
+		{"127.0.0.1", 80, "?q=1", "http://127.0.0.1:80/?q=1"},
+		{"127.0.0.1", 80, "", "http://127.0.0.1:80/"},
+	}
+	for _, tt := range tests {
+		if got := buildURL("http", tt.host, tt.port, tt.uri); got != tt.want {
+			t.Errorf("buildURL(%q, %d, %q) = %q, want %q", tt.host, tt.port, tt.uri, got, tt.want)
+		}
+	}
+}
+
+func TestHostHeader(t *testing.T) {
+	for host, want := range map[string]string{
+		"www.example.com":      "www.example.com",
+		"www.example.com:8080": "www.example.com:8080",
+		"127.0.0.1":            "127.0.0.1",
+		"::1":                  "[::1]",
+		"[::1]":                "[::1]",
+		"[::1]:8080":           "[::1]:8080",
+	} {
+		if got := hostHeader(host); got != want {
+			t.Errorf("hostHeader(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+// IPv6 addresses work with -I and -H (#12)
+func TestIPv6(t *testing.T) {
+	l, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 is not available: %s", err)
+	}
+	hosts := make(chan string, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hosts <- r.Host
+	}))
+	// replace the IPv4 listener created by NewUnstartedServer
+	if err := srv.Listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	srv.Listener = l
+	srv.Start()
+	defer srv.Close()
+	port := fmt.Sprint(l.Addr().(*net.TCPAddr).Port)
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantHost string
+	}{
+		{"-I without brackets", []string{"-I", "::1", "-p", port}, "[::1]"},
+		{"-I with brackets", []string{"-I", "[::1]", "-p", port}, "[::1]"},
+		{"-H with port", []string{"-H", "[::1]:" + port}, "[::1]:" + port},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, tt.args...)
+			assertResult(t, code, out, NagiosOk, "HTTP OK")
+			if got := receive(t, hosts); got != tt.wantHost {
+				t.Errorf("Host = %q, want %q", got, tt.wantHost)
+			}
+		})
+	}
+}
+
+// the port in -H is used to connect to unless -I or -p is given, as check_http does (#12)
+func TestVhostWithPort(t *testing.T) {
+	type request struct{ host, uri string }
+	reqs := make(chan request, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs <- request{r.Host, r.URL.RequestURI()}
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+
+	tests := []struct {
+		name string
+		args []string
+		want request
+	}{
+		{"port from -H", []string{"-H", u.Host}, request{u.Host, "/"}},
+		{"-p wins over -H", []string{"-H", u.Hostname() + ":1", "-p", u.Port()}, request{u.Hostname() + ":1", "/"}},
+		{"URI without slash", []string{"-H", u.Host, "-u", "health?q=1"}, request{u.Host, "/health?q=1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, tt.args...)
+			assertResult(t, code, out, NagiosOk, "HTTP OK")
+			if got := receive(t, reqs); got != tt.want {
+				t.Errorf("request = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("invalid port in -H", func(t *testing.T) {
+		code, out := runCheck(t, "-H", "www.example.com:http")
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - invalid port in -H: www.example.com:http")
 	})
 }
 
@@ -390,7 +516,7 @@ func TestSNI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			code, out := runCheck(t, append(append(serverArgs(t, srv), "-S"), tt.args...)...)
 			assertResult(t, code, out, NagiosOk, "HTTP OK: HTTP/2.0 200 OK")
-			if got := <-serverNames; got != tt.want {
+			if got := receive(t, serverNames); got != tt.want {
 				t.Errorf("SNI = %q, want %q", got, tt.want)
 			}
 		})

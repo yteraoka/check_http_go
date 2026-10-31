@@ -87,6 +87,14 @@ Strings are compared as they are. Other values are compared with their JSON repr
 
 The result is CRITICAL when the value does not match, when the key is not found, or when the response body is not valid JSON. `--json-key` and `--json-value` must be specified together; `--json-value=` checks for an empty string.
 
+### Host and port
+
+`-I` and `-H` accept an IPv6 address with or without brackets (e.g. `-I ::1`, `-I [::1]`). An IPv6 address is put in brackets in the Host header.
+
+When `-I` is not given, the host in `-H` is connected to. A port in `-H` (e.g. `-H example.com:5000`, `-H [::1]:5000`) is sent in the Host header and used to connect to unless `-p` is given, as `check_http` does.
+
+`-u` is prefixed with `/` if it does not start with one (e.g. `-u health` requests `/health`).
+
 ### Output
 
 The first line has the status, the reasons of a failure and the perfdata in the same format as `check_http`.
