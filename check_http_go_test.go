@@ -295,6 +295,29 @@ func TestVhostWithPort(t *testing.T) {
 	})
 }
 
+func TestBodyMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "Hello, World\nstatus: OK\n")
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"string found", []string{"-s", "World"}, NagiosOk, "HTTP OK"},
+		{"string not found", []string{"-s", "world"}, NagiosCritical, "string `world` not found in the response body"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
+}
+
 func TestJSON(t *testing.T) {
 	bodies := map[string]string{
 		"/object": `{

@@ -32,6 +32,7 @@ type Options struct {
 	Timeout        float64  `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
 	URI            string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	SSL            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
+	String         string   `short:"s" long:"string"     description:"String to expect in the content"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
 	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
@@ -353,6 +354,12 @@ func (r *result) checkStatus(cfg *config, resp *http.Response) {
 	}
 }
 
+func (r *result) checkBody(cfg *config, body []byte) {
+	if cfg.String != "" && !bytes.Contains(body, []byte(cfg.String)) {
+		r.fail(NagiosCritical, "string `%s` not found in the response body", cfg.String)
+	}
+}
+
 func (r *result) checkJSON(cfg *config, body []byte) {
 	d, err := parseJSON(body)
 	if err != nil {
@@ -470,6 +477,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	r := &result{status: NagiosOk}
 	r.checkStatus(cfg, resp)
+	r.checkBody(cfg, body)
 	if cfg.jsonCheck {
 		r.checkJSON(cfg, body)
 	}
