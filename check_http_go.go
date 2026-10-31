@@ -41,14 +41,14 @@ type Options struct {
 	EregI                    string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
 	InvertRegex              bool     `long:"invert-regex" description:"Return CRITICAL if the regular expression is found, OK if not"`
 	PageSize                 string   `short:"m" long:"pagesize"   description:"Minimum page size required (bytes) : Maximum page size required (bytes)" value-name:"MIN[:MAX]"`
-	OnRedirect               string   `short:"f" long:"onredirect" description:"How to handle a redirect" choice:"ok" choice:"warning" choice:"critical" choice:"follow" default:"ok"`
+	OnRedirect               string   `short:"f" long:"onredirect" description:"How to handle a redirect: ok, warning, critical or follow" default:"ok"`
 	MaxRedirs                int      `long:"max-redirs" description:"Maximal number of redirects with -f follow" default:"15"`
 	Expect                   string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JSONKey                  string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
 	JSONValue                string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
 	Method                   string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST), POST by default with -P" default:"GET"`
 	Post                     string   `short:"P" long:"post"       description:"URL-encoded HTTP POST data"`
-	ContentType              string   `short:"T" long:"content-type" description:"Content-Type header with -P" default-mask:"application/x-www-form-urlencoded"`
+	ContentType              string   `short:"T" long:"content-type" description:"Content-Type header with -P (default: application/x-www-form-urlencoded)"`
 	UserAgent                string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
 	Authorization            string   `short:"a" long:"authorization" description:"Username:password on sites with basic authentication" value-name:"AUTH_PAIR"`
 	ClientCertFile           string   `short:"J" long:"client-cert" description:"Client Certificate File"`
@@ -150,6 +150,12 @@ func parseArgs(args []string) (*config, error) {
 		cfg.certWarnDays, cfg.certCritDays = warn, crit
 	} else if cfg.ContinueAfterCertificate {
 		return nil, errors.New("--continue-after-certificate requires -C")
+	}
+	switch cfg.OnRedirect {
+	case "ok", "warning", "critical", "follow":
+	default:
+		// sticky and stickyport of check_http are not supported
+		return nil, fmt.Errorf("invalid -f: %s (ok, warning, critical or follow)", cfg.OnRedirect)
 	}
 	if cfg.UseIPv4 && cfg.UseIPv6 {
 		return nil, errors.New("-4 and -6 cannot be specified together")

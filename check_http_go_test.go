@@ -163,10 +163,8 @@ func TestRedirect(t *testing.T) {
 		}
 	})
 	t.Run("sticky is not supported", func(t *testing.T) {
-		code, _ := runCheck(t, append(serverArgs(t, srv), "-f", "sticky")...)
-		if code != NagiosUnknown {
-			t.Errorf("exit code = %d, want %d", code, NagiosUnknown)
-		}
+		code, out := runCheck(t, append(serverArgs(t, srv), "-f", "sticky")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - invalid -f: sticky (ok, warning, critical or follow)")
 	})
 }
 
