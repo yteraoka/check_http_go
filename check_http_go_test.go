@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -13,7 +12,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -22,41 +20,19 @@ import (
 	"time"
 )
 
-// main() calls os.Exit, so each test case re-executes this test binary as
-// check_http_go and inspects its stdout and exit code.
-const runMainEnv = "CHECK_HTTP_GO_RUN_MAIN"
-
-func TestMain(m *testing.M) {
-	if os.Getenv(runMainEnv) == "1" {
-		os.Args = append([]string{"check_http_go"}, os.Args[1:]...)
-		main()
-		return
-	}
-	os.Exit(m.Run())
-}
-
 func runCheck(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	code, stdout, _ := runCheckWithStderr(t, args...)
 	return code, stdout
 }
 
+// runCheckWithStderr runs the check with the command line arguments and returns
+// the exit status, the plugin output (stdout) and the --verbose output (stderr)
 func runCheckWithStderr(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], args...)
-	// GORACE: skip the 1s sleep at exit when the test binary is built with -race
-	cmd.Env = append(os.Environ(), runMainEnv+"=1", "GORACE=atexit_sleep_ms=0")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("failed to run check_http_go: %s", err)
-		}
-		return exitErr.ExitCode(), string(out), stderr.String()
-	}
-	return 0, string(out), stderr.String()
+	var stdout, stderr bytes.Buffer
+	code := run(args, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
 }
 
 // receive waits for a value sent from a test server handler. It fails instead
