@@ -259,7 +259,7 @@ func TestResponseTime(t *testing.T) {
 	}
 }
 
-// all failure reasons are reported and the most severe status wins (#16)
+// all failure reasons are reported on the first line and the most severe status wins (#16, #17)
 func TestMultipleReasons(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
@@ -272,15 +272,47 @@ func TestMultipleReasons(t *testing.T) {
 	if code != NagiosCritical {
 		t.Errorf("exit code = %d, want %d\noutput:\n%s", code, NagiosCritical, out)
 	}
-	for _, want := range []string{
-		"HTTP CRITICAL: HTTP/1.1 404 Not Found",
-		"\nUnexpected http status code: 404\n",
-		"\n`xxx.status` is not `ok` (actual: `ng`)\n",
-		"exceeded warning threshold 0.100s\n",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output does not contain %q\noutput:\n%s", want, out)
-		}
+	firstLine, longOutput, _ := strings.Cut(out, "\n")
+	re := regexp.MustCompile("^HTTP CRITICAL: HTTP/1\\.1 404 Not Found - " +
+		"Unexpected http status code: 404; " +
+		"`xxx\\.status` is not `ok` \\(actual: `ng`\\); " +
+		"response time [0-9.]+s exceeded warning threshold 0\\.100s - " +
+		"23 bytes in [0-9.]+ second response time \\|")
+	if !re.MatchString(firstLine) {
+		t.Errorf("first line %q does not match %s", firstLine, re)
+	}
+	// the JSON body follows as the long output when the JSON check fails
+	wantLong := "\n{\n    \"xxx\": {\n        \"status\": \"ng\"\n    }\n}"
+	if longOutput != wantLong {
+		t.Errorf("long output = %q, want %q", longOutput, wantLong)
+	}
+}
+
+// the JSON body is not printed when the JSON check passes (#17)
+func TestJSONBodyOnSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"xxx":{"status":"ok"}}`)
+	}))
+	defer srv.Close()
+
+	code, out := runCheck(t, append(serverArgs(t, srv), "--json-key", "xxx.status", "--json-value", "ok")...)
+	if code != NagiosOk || strings.Count(out, "\n") != 1 {
+		t.Errorf("exit code = %d, want a single line output\noutput:\n%s", code, out)
+	}
+}
+
+// "|" and line breaks in a reason would break the first line and the perfdata
+func TestReasonEscaping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"s":"a|b\r\nc"}`)
+	}))
+	defer srv.Close()
+
+	code, out := runCheck(t, append(serverArgs(t, srv), "--json-key", "s", "--json-value", "x")...)
+	firstLine, _, _ := strings.Cut(out, "\n")
+	want := "HTTP CRITICAL: HTTP/1.1 200 OK - `s` is not `x` (actual: `a¦b\\r\\nc`) - "
+	if code != NagiosCritical || !strings.HasPrefix(firstLine, want) || strings.Count(firstLine, "|") != 1 {
+		t.Errorf("exit code = %d, first line %q does not start with %q or has extra \"|\"", code, firstLine, want)
 	}
 }
 
@@ -419,20 +451,32 @@ func TestVerifyCert(t *testing.T) {
 	}
 }
 
+// the perfdata has the thresholds and -t as max like check_http (#17)
 func TestPerfData(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprint(w, "hello")
 	}))
 	defer srv.Close()
 
-	code, out := runCheck(t, serverArgs(t, srv)...)
-	if code != NagiosOk {
-		t.Fatalf("exit code = %d, want %d\noutput:\n%s", code, NagiosOk, out)
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default", nil, `time=[0-9.]+s;5\.000000;10\.000000;0\.000000;10\.000000 size=5B;;;0`},
+		{"thresholds", []string{"-w", "1.5", "-c", "3", "-t", "4"}, `time=[0-9.]+s;1\.500000;3\.000000;0\.000000;4\.000000 size=5B;;;0`},
 	}
-	firstLine := strings.SplitN(out, "\n", 2)[0]
-	re := regexp.MustCompile(`^HTTP OK: HTTP/1\.1 200 OK - 5 bytes in [0-9.]+ second response time \|time=[0-9.]+s;;;0\.000000 size=5B;;;0$`)
-	if !re.MatchString(firstLine) {
-		t.Errorf("first line %q does not match %s", firstLine, re)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
+			if code != NagiosOk {
+				t.Fatalf("exit code = %d, want %d\noutput:\n%s", code, NagiosOk, out)
+			}
+			re := regexp.MustCompile(`^HTTP OK: HTTP/1\.1 200 OK - 5 bytes in [0-9.]+ second response time \|` + tt.want + "\n$")
+			if !re.MatchString(out) {
+				t.Errorf("output %q does not match %s", out, re)
+			}
+		})
 	}
 }
 

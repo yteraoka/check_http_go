@@ -87,6 +87,30 @@ Strings are compared as they are. Other values are compared with their JSON repr
 
 The result is CRITICAL when the value does not match, when the key is not found, or when the response body is not valid JSON. `--json-key` and `--json-value` must be specified together; `--json-value=` checks for an empty string.
 
+### Output
+
+The first line has the status, the reasons of a failure and the perfdata in the same format as `check_http`.
+`|` and line breaks in the reasons are escaped as `¦`, `\r` and `\n` to keep the first line and the perfdata intact.
+
+```
+HTTP OK: HTTP/1.1 200 OK - 24 bytes in 0.011 second response time |time=0.011279s;5.000000;10.000000;0.000000;10.000000 size=24B;;;0
+HTTP WARNING: HTTP/1.1 404 Not Found - Unexpected http status code: 404 - 460 bytes in 0.002 second response time |time=0.001862s;5.000000;10.000000;0.000000;10.000000 size=460B;;;0
+```
+
+The perfdata of `time` has `-w`, `-c`, 0 and `-t` as the warning, critical, min and max values.
+
+When the JSON check fails, the response body is pretty-printed after the first line to help find out why.
+
+```
+HTTP CRITICAL: HTTP/1.1 200 OK - `xxx.status` is not `ok` (actual: `ng`) - 24 bytes in 0.002 second response time |time=0.001960s;5.000000;10.000000;0.000000;10.000000 size=24B;;;0
+
+{
+    "xxx": {
+        "status": "ng"
+    }
+}
+```
+
 ### TLS
 
 With `-S`, the host name given by `-H` (without the port) is sent as SNI, so the right certificate is selected even when connecting to an IP address with `-I`.
@@ -101,7 +125,7 @@ check_http_go -S -H internal.example.com --verify-cert --ca-cert=/etc/ssl/privat
 ### Differences from `check_http`
 
 - `-e`/`--expect`: a 3-digit value (e.g. `200`) is compared with the status code exactly, while other values (e.g. `HTTP/1.1 200`) are searched for in the status line as `check_http` does. Spaces around commas are ignored. If no value matches, the result is CRITICAL.
-- When multiple checks fail (status code, JSON value and response time), all reasons are printed and the most severe status is returned.
+- When multiple checks fail (status code, JSON value and response time), all reasons are printed on the first line separated by `; ` and the most severe status is returned.
 - If `-w` is greater than `-c`, the result is UNKNOWN.
 - `-S` does not take a TLS version. `--sni` is not needed because SNI is always sent (see TLS above).
 - `--verify-cert` and `--ca-cert` are named after the same options of `check_curl`.
