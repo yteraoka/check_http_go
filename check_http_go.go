@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -33,6 +34,9 @@ type Options struct {
 	URI            string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	SSL            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
 	String         string   `short:"s" long:"string"     description:"String to expect in the content"`
+	Regex          string   `short:"r" long:"regex"      description:"Regular expression (RE2 syntax) to search for in the content"`
+	EregI          string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
+	InvertRegex    bool     `long:"invert-regex" description:"Return CRITICAL if the regular expression is found, OK if not"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
 	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
@@ -72,9 +76,12 @@ var errUsage = errors.New("usage error")
 // config is the validated options and the values derived from them
 type config struct {
 	Options
-	jsonCheck  bool
-	scheme     string
-	hostHeader string
+	jsonCheck bool
+	// regex is -r or -R compiled, regexSource is the expression as given
+	regex       *regexp.Regexp
+	regexSource string
+	scheme      string
+	hostHeader  string
 }
 
 // parseArgs parses and validates the command line arguments
@@ -113,6 +120,25 @@ func parseArgs(args []string) (*config, error) {
 	}
 	if cfg.jsonCheck && cfg.JSONKey == "" {
 		return nil, errors.New("--json-key must not be empty")
+	}
+	if cfg.Regex != "" && cfg.EregI != "" {
+		return nil, errors.New("-r and -R cannot be specified together")
+	}
+	if cfg.Regex != "" || cfg.EregI != "" {
+		// ^ and $ match at line boundaries like REG_NEWLINE of check_http
+		mode := "(?m)"
+		cfg.regexSource = cfg.Regex
+		if cfg.EregI != "" {
+			mode = "(?mi)"
+			cfg.regexSource = cfg.EregI
+		}
+		re, err := regexp.Compile(mode + cfg.regexSource)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regular expression: %s", err)
+		}
+		cfg.regex = re
+	} else if cfg.InvertRegex {
+		return nil, errors.New("--invert-regex requires -r or -R")
 	}
 	if cfg.CACertFile != "" && !cfg.VerifyCert {
 		return nil, errors.New("--ca-cert requires --verify-cert")
@@ -357,6 +383,13 @@ func (r *result) checkStatus(cfg *config, resp *http.Response) {
 func (r *result) checkBody(cfg *config, body []byte) {
 	if cfg.String != "" && !bytes.Contains(body, []byte(cfg.String)) {
 		r.fail(NagiosCritical, "string `%s` not found in the response body", cfg.String)
+	}
+	if cfg.regex != nil {
+		if found := cfg.regex.Match(body); found && cfg.InvertRegex {
+			r.fail(NagiosCritical, "pattern `%s` found in the response body", cfg.regexSource)
+		} else if !found && !cfg.InvertRegex {
+			r.fail(NagiosCritical, "pattern `%s` not found in the response body", cfg.regexSource)
+		}
 	}
 }
 

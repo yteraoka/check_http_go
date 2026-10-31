@@ -309,6 +309,18 @@ func TestBodyMatch(t *testing.T) {
 	}{
 		{"string found", []string{"-s", "World"}, NagiosOk, "HTTP OK"},
 		{"string not found", []string{"-s", "world"}, NagiosCritical, "string `world` not found in the response body"},
+		{"regex found", []string{"-r", "status: (OK|FINE)"}, NagiosOk, "HTTP OK"},
+		{"regex matches a line", []string{"-r", "^status: OK$"}, NagiosOk, "HTTP OK"},
+		{"regex not found", []string{"-r", "status: NG"}, NagiosCritical, "pattern `status: NG` not found in the response body"},
+		{"regex is case-sensitive", []string{"-r", "STATUS: OK"}, NagiosCritical, "pattern `STATUS: OK` not found in the response body"},
+		{"case-insensitive regex found", []string{"-R", "STATUS: ok"}, NagiosOk, "HTTP OK"},
+		{"case-insensitive regex not found", []string{"-R", "status: ng"}, NagiosCritical, "pattern `status: ng` not found in the response body"},
+		{"inverted regex not found", []string{"-r", "error", "--invert-regex"}, NagiosOk, "HTTP OK"},
+		{"inverted regex found", []string{"-R", "WORLD", "--invert-regex"}, NagiosCritical, "pattern `WORLD` found in the response body"},
+		{"invalid regex", []string{"-r", "("}, NagiosUnknown, "HTTP UNKNOWN - invalid regular expression: "},
+		{"-r and -R", []string{"-r", "a", "-R", "b"}, NagiosUnknown, "HTTP UNKNOWN - -r and -R cannot be specified together"},
+		{"--invert-regex without regex", []string{"--invert-regex"}, NagiosUnknown, "HTTP UNKNOWN - --invert-regex requires -r or -R"},
+		{"string and regex", []string{"-s", "world", "-r", "NG"}, NagiosCritical, "string `world` not found in the response body; pattern `NG` not found in the response body"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
