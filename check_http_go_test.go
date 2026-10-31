@@ -215,6 +215,40 @@ func TestRequest(t *testing.T) {
 	})
 }
 
+func TestHeader(t *testing.T) {
+	for _, tt := range []struct {
+		header string
+		value  string
+		code   int
+	}{
+		{"X-Foo:bar", "bar", NagiosOk},
+		{"X-Foo: bar", "bar", NagiosOk},
+		{" X-Foo :\tbar \t", "bar", NagiosOk},
+		{"X-Foo:one:two", "one:two", NagiosOk},
+		{"X-Foo:", "", NagiosOk},
+		{"x-foo:bar", "bar", NagiosOk},
+		{"X-Foo", "", NagiosUnknown},
+		{":bar", "", NagiosUnknown},
+		{" : bar", "", NagiosUnknown},
+		{"X Foo: bar", "", NagiosUnknown},
+	} {
+		t.Run(tt.header, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if values, ok := r.Header["X-Foo"]; !ok || len(values) != 1 || values[0] != tt.value {
+					t.Errorf("X-Foo = %q, want [%q]", values, tt.value)
+				}
+			}))
+			defer srv.Close()
+			code, out := runCheck(t, append(serverArgs(t, srv), "-k", tt.header)...)
+			wantOut := "HTTP OK"
+			if tt.code == NagiosUnknown {
+				wantOut = "HTTP UNKNOWN - invalid header:"
+			}
+			assertResult(t, code, out, tt.code, wantOut)
+		})
+	}
+}
+
 func TestRequestBody(t *testing.T) {
 	type request struct {
 		method        string

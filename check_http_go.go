@@ -21,6 +21,7 @@ import (
 	"time"
 
 	flags "github.com/jessevdk/go-flags"
+	"golang.org/x/net/http/httpguts"
 )
 
 type Options struct {
@@ -430,10 +431,11 @@ func newRequest(cfg *config) (*http.Request, error) {
 
 	for _, header := range cfg.Headers {
 		name, value, ok := strings.Cut(header, ":")
-		if !ok {
+		name = strings.TrimSpace(name)
+		if !ok || !httpguts.ValidHeaderFieldName(name) {
 			return nil, fmt.Errorf("invalid header: %s", header)
 		}
-		req.Header.Set(strings.TrimSpace(name), strings.TrimSpace(value))
+		req.Header.Set(name, strings.TrimSpace(value))
 	}
 
 	return req, nil
