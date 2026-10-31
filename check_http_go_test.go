@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -325,6 +328,95 @@ func TestTLSAgainstPlainHTTP(t *testing.T) {
 
 	code, out := runCheck(t, append(serverArgs(t, srv), "-S")...)
 	assertResult(t, code, out, NagiosCritical, "HTTP CRITICAL - ")
+}
+
+// the host name given by -H is sent as SNI (#15)
+func TestSNI(t *testing.T) {
+	serverNames := make(chan string, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.TLS = &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			serverNames <- hello.ServerName
+			return nil, nil
+		},
+	}
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"vhost", []string{"-H", "www.example.com"}, "www.example.com"},
+		{"vhost with port", []string{"-H", "www.example.com:8443"}, "www.example.com"},
+		// an IP address is not sent as SNI
+		{"no vhost", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(append(serverArgs(t, srv), "-S"), tt.args...)...)
+			assertResult(t, code, out, NagiosOk, "HTTP OK: HTTP/2.0 200 OK")
+			if got := <-serverNames; got != tt.want {
+				t.Errorf("SNI = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTLSServerName(t *testing.T) {
+	for host, want := range map[string]string{
+		"www.example.com":      "www.example.com",
+		"www.example.com:8443": "www.example.com",
+		"127.0.0.1":            "127.0.0.1",
+		"127.0.0.1:8443":       "127.0.0.1",
+		"::1":                  "::1",
+		"[::1]":                "::1",
+		"[::1]:8443":           "::1",
+	} {
+		if got := tlsServerName(host); got != want {
+			t.Errorf("tlsServerName(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+func TestVerifyCert(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+
+	// the httptest certificate is a self-signed CA for 127.0.0.1, example.com and *.example.com
+	dir := t.TempDir()
+	caCert := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caCert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notPEM := filepath.Join(dir, "not.pem")
+	if err := os.WriteFile(notPEM, []byte("not a certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"not verified by default", nil, NagiosOk, "HTTP OK"},
+		{"unknown authority", []string{"--verify-cert"}, NagiosCritical, "certificate signed by unknown authority"},
+		{"trusted by --ca-cert", []string{"--verify-cert", "--ca-cert", caCert}, NagiosOk, "HTTP OK"},
+		{"vhost matches the certificate", []string{"--verify-cert", "--ca-cert", caCert, "-H", "www.example.com"}, NagiosOk, "HTTP OK"},
+		{"vhost does not match the certificate", []string{"--verify-cert", "--ca-cert", caCert, "-H", "www.example.org"}, NagiosCritical, "certificate is valid for"},
+		{"--ca-cert without --verify-cert", []string{"--ca-cert", caCert}, NagiosUnknown, "HTTP UNKNOWN - --ca-cert requires --verify-cert"},
+		{"--ca-cert not found", []string{"--verify-cert", "--ca-cert", filepath.Join(dir, "missing.pem")}, NagiosUnknown, "HTTP UNKNOWN - "},
+		{"--ca-cert without certificates", []string{"--verify-cert", "--ca-cert", notPEM}, NagiosUnknown, "HTTP UNKNOWN - no certificates found in " + notPEM},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(append(serverArgs(t, srv), "-S"), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
 }
 
 func TestPerfData(t *testing.T) {

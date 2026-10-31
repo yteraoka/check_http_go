@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	flags "github.com/jessevdk/go-flags"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"io/ioutil"
 	"maps"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,6 +44,8 @@ type Options struct {
 	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
 	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
 	PrivateKeyFile string   `short:"K" long:"private-key" description:"Private Key File"`
+	VerifyCert     bool     `long:"verify-cert" description:"Verify the server certificate and host name"`
+	CACertFile     string   `long:"ca-cert" description:"CA certificate file (PEM) to verify the server certificate with, used with --verify-cert"`
 	Version        bool     `long:"version" description:"Print version"`
 }
 
@@ -66,16 +70,38 @@ func getVersion() string {
 	return version
 }
 
-func genTlsConfig(opts Options) *tls.Config {
-	conf := &tls.Config{}
+// tlsServerName strips the port from the -H value (e.g. example.com:5000)
+func tlsServerName(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+}
 
-	conf.InsecureSkipVerify = true
+func genTlsConfig(opts Options, serverName string) *tls.Config {
+	conf := &tls.Config{
+		// http.Transport uses the URL host (the -I value) unless ServerName is set.
+		// It is sent as SNI unless it is an IP address and verified with --verify-cert.
+		ServerName:         serverName,
+		InsecureSkipVerify: !opts.VerifyCert,
+	}
+
+	if opts.CACertFile != "" {
+		b, err := os.ReadFile(opts.CACertFile)
+		if err != nil {
+			unknown("%s", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(b) {
+			unknown("no certificates found in %s", opts.CACertFile)
+		}
+		conf.RootCAs = pool
+	}
 
 	if opts.ClientCertFile != "" && opts.PrivateKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(opts.ClientCertFile, opts.PrivateKeyFile)
 		if err != nil {
-			fmt.Printf("HTTP UNKNOWN - %s\n", err)
-			os.Exit(NagiosUnknown)
+			unknown("%s", err)
 		}
 		conf.Certificates = []tls.Certificate{cert}
 	}
@@ -209,6 +235,9 @@ func main() {
 	if jsonCheck && opts.JsonKey == "" {
 		unknown("--json-key must not be empty")
 	}
+	if opts.CACertFile != "" && !opts.VerifyCert {
+		unknown("--ca-cert requires --verify-cert")
+	}
 	if opts.Warn > opts.Crit {
 		unknown("warning threshold %.3fs must not be greater than critical threshold %.3fs", opts.Warn, opts.Crit)
 	}
@@ -229,7 +258,7 @@ func main() {
 
 	// https://golang.org/pkg/crypto/tls/#Config
 	tr := &http.Transport{
-		TLSClientConfig: genTlsConfig(opts),
+		TLSClientConfig: genTlsConfig(opts, tlsServerName(host_header)),
 	}
 
 	// https://github.com/golang/go/issues/17051
