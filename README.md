@@ -38,8 +38,8 @@ Application Options:
   -p, --port=                          TCP Port (default: 0)
   -w, --warn=                          Warning time in second (default: 5.0)
   -c, --crit=                          Critical time in second (default: 10.0)
-  -k, --header=                        additional headers, acceptable multiple
-                                       times
+  -k, --header=                        Additional header in the form of "Name:
+                                       value", acceptable multiple times
   -t, --timeout=                       Timeout in second (default: 10)
   -u, --uri=                           URI (default: /)
   -S, --ssl                            Enable TLS
@@ -145,7 +145,10 @@ check_http_go ... -m 100:10000                 # the body is 100 to 10000 bytes
 check_http_go ... -P 'name=value'                          # POST with application/x-www-form-urlencoded
 check_http_go ... -P '{"name":"value"}' -T application/json
 check_http_go ... -a 'user:password'                       # basic authentication
+check_http_go ... -k 'Accept: application/json' -k 'X-Request-Id: check'
 ```
+
+`-k` takes a header in the form of `Name: value` (the space after the colon is optional) and can be given multiple times. An invalid header is UNKNOWN.
 
 `-P` sends POST unless `-j` is given. The `Authorization` header is masked in the `-v` output.
 

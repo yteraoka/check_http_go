@@ -215,6 +215,55 @@ func TestRequest(t *testing.T) {
 	})
 }
 
+// -k accepts "Name:value" as well as "Name: value" (#10)
+func TestHeaderOption(t *testing.T) {
+	values := make(chan []string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values <- r.Header.Values("X-Foo")
+	}))
+	defer srv.Close()
+
+	for _, tt := range []struct {
+		header string
+		want   string
+	}{
+		{"X-Foo:bar", "bar"},
+		{"X-Foo: bar", "bar"},
+		{" X-Foo :\tbar \t", "bar"},
+		{"X-Foo:one:two", "one:two"},
+		{"X-Foo:", ""},
+		{"x-foo:bar", "bar"},
+	} {
+		t.Run(tt.header, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), "-k", tt.header)...)
+			assertResult(t, code, out, NagiosOk, "HTTP OK")
+			if got := receive(t, values); len(got) != 1 || got[0] != tt.want {
+				t.Errorf("X-Foo = %q, want [%q]", got, tt.want)
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name    string
+		header  string
+		wantOut string
+	}{
+		// the value is not printed as it may have a secret like a token
+		{"no colon", "X-Token secret", `HTTP UNKNOWN - -k must be in the form of "Name: value"`},
+		{"empty name", ":secret", `HTTP UNKNOWN - invalid header name in -k: ""`},
+		{"invalid name", "X Token: secret", `HTTP UNKNOWN - invalid header name in -k: "X Token"`},
+		{"invalid value", "X-Token: sec\nret", `HTTP UNKNOWN - invalid header value in -k: "X-Token"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), "-k", tt.header)...)
+			assertResult(t, code, out, NagiosUnknown, tt.wantOut)
+			if strings.Contains(out, "secret") || strings.Contains(out, "sec\nret") {
+				t.Errorf("output contains the header value\noutput:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestRequestBody(t *testing.T) {
 	type request struct {
 		method        string
