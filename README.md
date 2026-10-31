@@ -43,8 +43,10 @@ Application Options:
   -u, --uri=         URI (default: /)
   -S, --ssl          Enable TLS
   -e, --expect=      Expected status codes or strings in the status line (csv)
-      --json-key=    JSON key
-      --json-value=  Expected json value
+      --json-key=    Dot separated JSON key, array elements by index (e.g.
+                     items.0.status)
+      --json-value=  Expected JSON value, non-string values as JSON (e.g. 1,
+                     true, null)
   -j, --method=      HTTP METHOD (GET, HEAD, POST) (default: GET)
   -A, --useragent=   User-Agent header (default: check_http_go)
   -J, --client-cert= Client Certificate File
@@ -70,6 +72,17 @@ use `--json-key` and `--json-value`
 ```
 check_http_go ... --json-key=xxx.status --json-value=ok
 ```
+
+Array elements are referred to by index, including a top-level array.
+
+```
+# {"items": [{"status": "ok"}, {"status": "ng"}]}
+check_http_go ... --json-key=items.1.status --json-value=ng
+```
+
+Strings are compared as they are. Other values are compared with their JSON representation as written in the response body: numbers as written (e.g. `1`, `1.50`), `true`, `false`, `null`, and compact JSON with sorted keys for objects and arrays (e.g. `{"status":"ok"}`).
+
+The result is CRITICAL when the value does not match, when the key is not found, or when the response body is not valid JSON. `--json-key` and `--json-value` must be specified together; `--json-value=` checks for an empty string.
 
 ### Differences from `check_http`
 

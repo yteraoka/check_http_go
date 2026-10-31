@@ -162,28 +162,73 @@ func TestRequest(t *testing.T) {
 }
 
 func TestJSON(t *testing.T) {
+	bodies := map[string]string{
+		"/object": `{
+			"xxx": {"status": "ok"},
+			"int": 1, "float": 1.50, "big": 12345678901234567890,
+			"true": true, "null": null, "empty": "", "html": {"a": "<b>&"},
+			"items": [{"status": "ok"}, {"status": "ng"}]
+		}`,
+		"/array":    `[{"status": "ok"}]`,
+		"/invalid":  `<html>not json</html>`,
+		"/trailing": `{"status": "ok"} {}`,
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"xxx":{"status":"ok"}}`)
+		_, _ = fmt.Fprint(w, bodies[r.URL.Path])
 	}))
 	defer srv.Close()
 
 	tests := []struct {
 		name     string
-		args     []string
+		uri      string
+		key      string
+		value    string
 		wantCode int
 		wantOut  string
 	}{
-		{"matched", []string{"--json-key", "xxx.status", "--json-value", "ok"}, NagiosOk, "HTTP OK"},
-		{"unmatched", []string{"--json-key", "xxx.status", "--json-value", "ng"}, NagiosCritical, "`xxx.status` is not `ng`"},
-		{"missing key", []string{"--json-key", "yyy.status", "--json-value", "ok"}, NagiosCritical, "`yyy.status` is not `ok`"},
+		{"matched", "/object", "xxx.status", "ok", NagiosOk, "HTTP OK"},
+		{"unmatched", "/object", "xxx.status", "ng", NagiosCritical, "`xxx.status` is not `ng` (actual: `ok`)"},
+		{"missing key", "/object", "yyy.status", "ok", NagiosCritical, "`yyy.status` is not found in the response body"},
+		{"key under a string", "/object", "xxx.status.foo", "ok", NagiosCritical, "`xxx.status.foo` is not found in the response body"},
+		// non-string values are compared with their JSON representation (#11)
+		{"integer", "/object", "int", "1", NagiosOk, "HTTP OK"},
+		{"float as written", "/object", "float", "1.50", NagiosOk, "HTTP OK"},
+		{"big integer without precision loss", "/object", "big", "12345678901234567890", NagiosOk, "HTTP OK"},
+		{"boolean", "/object", "true", "true", NagiosOk, "HTTP OK"},
+		{"null", "/object", "null", "null", NagiosOk, "HTTP OK"},
+		{"empty string", "/object", "empty", "", NagiosOk, "HTTP OK"},
+		{"object", "/object", "xxx", `{"status":"ok"}`, NagiosOk, "HTTP OK"},
+		{"object without HTML escaping", "/object", "html", `{"a":"<b>&"}`, NagiosOk, "HTTP OK"},
+		{"number unmatched", "/object", "int", "2", NagiosCritical, "`int` is not `2` (actual: `1`)"},
+		// array elements are referred to by index
+		{"array index", "/object", "items.1.status", "ng", NagiosOk, "HTTP OK"},
+		{"array index out of range", "/object", "items.2.status", "ok", NagiosCritical, "`items.2.status` is not found in the response body"},
+		{"array non-numeric index", "/object", "items.x", "ok", NagiosCritical, "`items.x` is not found in the response body"},
+		{"top-level array", "/array", "0.status", "ok", NagiosOk, "HTTP OK"},
+		{"invalid JSON", "/invalid", "status", "ok", NagiosCritical, "response body is not valid JSON: "},
+		{"trailing data", "/trailing", "status", "ok", NagiosCritical, "response body is not valid JSON: "},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
+			args := append(serverArgs(t, srv), "-u", tt.uri, "--json-key", tt.key, "--json-value="+tt.value)
+			code, out := runCheck(t, args...)
 			assertResult(t, code, out, tt.wantCode, tt.wantOut)
 		})
 	}
+
+	t.Run("key without value", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-u", "/object", "--json-key", "xxx.status")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - --json-key and --json-value must be specified together")
+	})
+	t.Run("value without key", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-u", "/object", "--json-value", "ok")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - --json-key and --json-value must be specified together")
+	})
+	t.Run("empty key", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-u", "/object", "--json-key=", "--json-value", "ok")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - --json-key must not be empty")
+	})
 }
 
 func TestResponseTime(t *testing.T) {
@@ -227,7 +272,7 @@ func TestMultipleReasons(t *testing.T) {
 	for _, want := range []string{
 		"HTTP CRITICAL: HTTP/1.1 404 Not Found",
 		"\nUnexpected http status code: 404\n",
-		"\n`xxx.status` is not `ok`\n",
+		"\n`xxx.status` is not `ok` (actual: `ng`)\n",
 		"exceeded warning threshold 0.100s\n",
 	} {
 		if !strings.Contains(out, want) {
