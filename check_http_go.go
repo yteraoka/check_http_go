@@ -198,6 +198,10 @@ func jsonValueString(v interface{}) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
+// reasonEscaper keeps a reason on the first line and out of the perfdata,
+// as values from the response body (e.g. a JSON value) may contain them
+var reasonEscaper = strings.NewReplacer("|", "¦", "\r", `\r`, "\n", `\n`)
+
 func prettyPrintJSON(b []byte) ([]byte, error) {
 	var out bytes.Buffer
 	err := json.Indent(&out, b, "", "    ")
@@ -332,7 +336,7 @@ func main() {
 		if status > nagios_status {
 			nagios_status = status
 		}
-		result_messages = append(result_messages, fmt.Sprintf(format, a...))
+		result_messages = append(result_messages, reasonEscaper.Replace(fmt.Sprintf(format, a...)))
 	}
 
 	if opts.Expect == "" {
@@ -350,13 +354,19 @@ func main() {
 		if d, err := parseJSON(buf); err != nil {
 			fail(NagiosCritical, "response body is not valid JSON: %s", err)
 		} else {
+			matched := false
 			if v, ok := lookupJSON(d, opts.JsonKey); !ok {
 				fail(NagiosCritical, "`%s` is not found in the response body", opts.JsonKey)
 			} else if actual := jsonValueString(v); actual != opts.JsonValue {
 				fail(NagiosCritical, "`%s` is not `%s` (actual: `%s`)", opts.JsonKey, opts.JsonValue, actual)
+			} else {
+				matched = true
 			}
-			if out, err := prettyPrintJSON(buf); err == nil {
-				additional_out = out
+			// the body can be large, so print it only to help find out why the check failed
+			if !matched {
+				if out, err := prettyPrintJSON(buf); err == nil {
+					additional_out = out
+				}
 			}
 		}
 	}
@@ -373,10 +383,14 @@ func main() {
 	} else if nagios_status == NagiosCritical {
 		result_str = "CRITICAL"
 	}
-	fmt.Printf("HTTP %s: %s %s - %d bytes in %.3f second response time |time=%.6fs;;;%.6f size=%dB;;;0\n", result_str, resp.Proto, resp.Status, size, diff.Seconds(), diff.Seconds(), 0.0, size)
-	for _, m := range result_messages {
-		fmt.Println(m)
+	// the reasons are on the first line, which is often the only line shown in notifications
+	reasons := ""
+	if len(result_messages) > 0 {
+		reasons = strings.Join(result_messages, "; ") + " - "
 	}
+	// same format as check_http: the perfdata of time has the thresholds, 0 as min and the timeout as max
+	fmt.Printf("HTTP %s: %s %s - %s%d bytes in %.3f second response time |time=%.6fs;%.6f;%.6f;0.000000;%.6f size=%dB;;;0\n",
+		result_str, resp.Proto, resp.Status, reasons, size, diff.Seconds(), diff.Seconds(), opts.Warn, opts.Crit, float64(opts.Timeout), size)
 	if len(additional_out) > 0 {
 		fmt.Printf("\n%s", additional_out)
 	}
