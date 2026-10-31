@@ -330,6 +330,34 @@ func TestBodyMatch(t *testing.T) {
 	}
 }
 
+func TestPageSize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "0123456789")
+	}))
+	defer srv.Close()
+
+	tests := []struct {
+		name     string
+		size     string
+		wantCode int
+		wantOut  string
+	}{
+		{"min", "10", NagiosOk, "HTTP OK"},
+		{"min:max", "5:10", NagiosOk, "HTTP OK"},
+		{"too small", "11", NagiosWarning, "page size 10 too small (minimum 11)"},
+		{"too large", "1:9", NagiosWarning, "page size 10 too large (maximum 9)"},
+		{"invalid", "a", NagiosUnknown, "HTTP UNKNOWN - invalid -m: a"},
+		{"invalid max", "1:b", NagiosUnknown, "HTTP UNKNOWN - invalid -m: 1:b"},
+		{"min greater than max", "10:5", NagiosUnknown, "HTTP UNKNOWN - invalid -m: 10:5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), "-m", tt.size)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
+}
+
 func TestJSON(t *testing.T) {
 	bodies := map[string]string{
 		"/object": `{

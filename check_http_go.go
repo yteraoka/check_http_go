@@ -37,6 +37,7 @@ type Options struct {
 	Regex          string   `short:"r" long:"regex"      description:"Regular expression (RE2 syntax) to search for in the content"`
 	EregI          string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
 	InvertRegex    bool     `long:"invert-regex" description:"Return CRITICAL if the regular expression is found, OK if not"`
+	PageSize       string   `short:"m" long:"pagesize"   description:"Minimum page size required (bytes) : Maximum page size required (bytes)" value-name:"MIN[:MAX]"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
 	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
@@ -80,8 +81,11 @@ type config struct {
 	// regex is -r or -R compiled, regexSource is the expression as given
 	regex       *regexp.Regexp
 	regexSource string
-	scheme      string
-	hostHeader  string
+	// minSize and maxSize are from -m, maxSize is -1 if not given
+	minSize    int
+	maxSize    int
+	scheme     string
+	hostHeader string
 }
 
 // parseArgs parses and validates the command line arguments
@@ -140,6 +144,11 @@ func parseArgs(args []string) (*config, error) {
 	} else if cfg.InvertRegex {
 		return nil, errors.New("--invert-regex requires -r or -R")
 	}
+	minSize, maxSize, err := parsePageSize(cfg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	cfg.minSize, cfg.maxSize = minSize, maxSize
 	if cfg.CACertFile != "" && !cfg.VerifyCert {
 		return nil, errors.New("--ca-cert requires --verify-cert")
 	}
@@ -162,6 +171,26 @@ func parseArgs(args []string) (*config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// parsePageSize parses -m in the form of MIN[:MAX] and returns -1 as max if it is not given
+func parsePageSize(s string) (int, int, error) {
+	if s == "" {
+		return 0, -1, nil
+	}
+	minStr, maxStr, hasMax := strings.Cut(s, ":")
+	minSize, err := strconv.Atoi(minStr)
+	if err != nil || minSize < 0 {
+		return 0, 0, fmt.Errorf("invalid -m: %s", s)
+	}
+	if !hasMax {
+		return minSize, -1, nil
+	}
+	maxSize, err := strconv.Atoi(maxStr)
+	if err != nil || maxSize < minSize {
+		return 0, 0, fmt.Errorf("invalid -m: %s", s)
+	}
+	return minSize, maxSize, nil
 }
 
 // tlsServerName strips the port from the -H value (e.g. example.com:5000)
@@ -383,6 +412,12 @@ func (r *result) checkStatus(cfg *config, resp *http.Response) {
 func (r *result) checkBody(cfg *config, body []byte) {
 	if cfg.String != "" && !bytes.Contains(body, []byte(cfg.String)) {
 		r.fail(NagiosCritical, "string `%s` not found in the response body", cfg.String)
+	}
+	// check_http returns WARNING when the page size is out of the range
+	if len(body) < cfg.minSize {
+		r.fail(NagiosWarning, "page size %d too small (minimum %d)", len(body), cfg.minSize)
+	} else if cfg.maxSize >= 0 && len(body) > cfg.maxSize {
+		r.fail(NagiosWarning, "page size %d too large (maximum %d)", len(body), cfg.maxSize)
 	}
 	if cfg.regex != nil {
 		if found := cfg.regex.Match(body); found && cfg.InvertRegex {
