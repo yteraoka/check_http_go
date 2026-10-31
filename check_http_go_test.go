@@ -97,8 +97,14 @@ func TestStatusCode(t *testing.T) {
 		{"404", []string{"-u", "/404"}, NagiosWarning, "Unexpected http status code: 404"},
 		{"503", []string{"-u", "/503"}, NagiosCritical, "Unexpected http status code: 503"},
 		{"expect matched", []string{"-u", "/404", "-e", "200,404"}, NagiosOk, "HTTP OK: HTTP/1.1 404 Not Found"},
-		// TODO: check_http returns CRITICAL in this case (#16)
-		{"expect unmatched", []string{"-u", "/200", "-e", "201,204"}, NagiosWarning, "Unexpected http status code: 200"},
+		// check_http returns CRITICAL in this case (#16)
+		{"expect unmatched", []string{"-u", "/200", "-e", "201,204"}, NagiosCritical, "Unexpected http status code: 200"},
+		{"expect with spaces", []string{"-u", "/301", "-e", "200, 301"}, NagiosOk, "HTTP OK: HTTP/1.1 301 Moved Permanently"},
+		// non 3-digit values are searched for in the status line as check_http does
+		{"expect status line", []string{"-u", "/200", "-e", "HTTP/1.1 200"}, NagiosOk, "HTTP OK: HTTP/1.1 200 OK"},
+		{"expect status line unmatched", []string{"-u", "/200", "-e", "HTTP/1.0 200,Created"}, NagiosCritical, "Unexpected http status code: 200"},
+		// a 3-digit value is not a substring match against the status line
+		{"expect code is exact", []string{"-u", "/200", "-e", "100"}, NagiosCritical, "Unexpected http status code: 200"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -195,12 +201,38 @@ func TestResponseTime(t *testing.T) {
 		{"ok", []string{"-w", "5", "-c", "10"}, NagiosOk, "HTTP OK"},
 		{"warning", []string{"-w", "0.1", "-c", "10"}, NagiosWarning, "exceeded warning threshold 0.100s"},
 		{"critical", []string{"-w", "0.05", "-c", "0.1"}, NagiosCritical, "exceeded critical threshold 0.100s"},
+		{"warn greater than crit", []string{"-w", "10", "-c", "5"}, NagiosUnknown, "HTTP UNKNOWN - warning threshold 10.000s must not be greater than critical threshold 5.000s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
 			assertResult(t, code, out, tt.wantCode, tt.wantOut)
 		})
+	}
+}
+
+// all failure reasons are reported and the most severe status wins (#16)
+func TestMultipleReasons(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, `{"xxx":{"status":"ng"}}`)
+	}))
+	defer srv.Close()
+
+	code, out := runCheck(t, append(serverArgs(t, srv), "-w", "0.1", "--json-key", "xxx.status", "--json-value", "ok")...)
+	if code != NagiosCritical {
+		t.Errorf("exit code = %d, want %d\noutput:\n%s", code, NagiosCritical, out)
+	}
+	for _, want := range []string{
+		"HTTP CRITICAL: HTTP/1.1 404 Not Found",
+		"\nUnexpected http status code: 404\n",
+		"\n`xxx.status` is not `ok`\n",
+		"exceeded warning threshold 0.100s\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not contain %q\noutput:\n%s", want, out)
+		}
 	}
 }
 
@@ -298,10 +330,8 @@ func TestVerbose(t *testing.T) {
 
 func TestInvalidArgs(t *testing.T) {
 	t.Run("no host", func(t *testing.T) {
-		code, _ := runCheck(t)
-		if code != NagiosUnknown {
-			t.Errorf("exit code = %d, want %d", code, NagiosUnknown)
-		}
+		code, out := runCheck(t)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - -H or -I is required")
 	})
 	t.Run("unknown option", func(t *testing.T) {
 		code, _ := runCheck(t, "-I", "127.0.0.1", "--no-such-option")

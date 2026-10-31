@@ -9,7 +9,6 @@ import (
 	flags "github.com/jessevdk/go-flags"
 	"golang.org/x/net/http2"
 	"io/ioutil"
-	"log"
 	"maps"
 	"net/http"
 	"net/url"
@@ -36,7 +35,7 @@ type Options struct {
 	Timeout        int      `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
 	Uri            string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	Ssl            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
-	Expect         string   `short:"e" long:"expect"     description:"Expected status codes (csv)" default:""`
+	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JsonKey        string   `long:"json-key"   description:"JSON key "`
 	JsonValue      string   `long:"json-value" description:"Expected json value"`
 	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
@@ -93,6 +92,33 @@ func printHeaders(prefix string, h http.Header) {
 	}
 }
 
+// unknown prints the message as the plugin output and exits with UNKNOWN
+func unknown(format string, a ...interface{}) {
+	fmt.Printf("HTTP UNKNOWN - "+format+"\n", a...)
+	os.Exit(NagiosUnknown)
+}
+
+// matchExpect reports whether the response matches one of the comma separated
+// expectations. A 3-digit value is compared with the status code; any other
+// value is searched for in the status line (e.g. "HTTP/1.1 200 OK") as check_http does.
+func matchExpect(expect string, proto string, status string, code int) bool {
+	statusLine := proto + " " + status
+	for _, e := range strings.Split(expect, ",") {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if n, err := strconv.Atoi(e); err == nil && len(e) == 3 {
+			if n == code {
+				return true
+			}
+		} else if strings.Contains(statusLine, e) {
+			return true
+		}
+	}
+	return false
+}
+
 func prettyPrintJSON(b []byte) ([]byte, error) {
 	var out bytes.Buffer
 	err := json.Indent(&out, b, "", "    ")
@@ -101,7 +127,7 @@ func prettyPrintJSON(b []byte) ([]byte, error) {
 
 func main() {
 	var opts Options
-	var result_message string
+	var result_messages []string
 	var host_header string
 	var additional_out []byte
 	scheme := "http"
@@ -119,7 +145,10 @@ func main() {
 		opts.Ipaddr = opts.Vhost
 	}
 	if opts.Ipaddr == "" {
-		os.Exit(NagiosUnknown)
+		unknown("-H or -I is required")
+	}
+	if opts.Warn > opts.Crit {
+		unknown("warning threshold %.3fs must not be greater than critical threshold %.3fs", opts.Warn, opts.Crit)
 	}
 	host_header = opts.Ipaddr
 	if opts.Vhost != "" {
@@ -144,7 +173,7 @@ func main() {
 	// https://github.com/golang/go/issues/17051
 	// https://qiita.com/catatsuy/items/ee4fc094c6b9c39ee08f
 	if err := http2.ConfigureTransport(tr); err != nil {
-		log.Fatalf("Failed to configure h2 transport: %s", err)
+		unknown("failed to configure h2 transport: %s", err)
 	}
 
 	c := &http.Client{
@@ -162,8 +191,7 @@ func main() {
 
 	req, err := http.NewRequest(opts.Method, url_str, strings.NewReader(values.Encode()))
 	if err != nil {
-		fmt.Printf("HTTP UNKNOWN - %s\n", err)
-		os.Exit(NagiosUnknown)
+		unknown("%s", err)
 	}
 
 	req.Host = host_header
@@ -198,7 +226,6 @@ func main() {
 	t2 := time.Now()
 	diff := t2.Sub(t1)
 
-	status_text := strconv.Itoa(resp.StatusCode)
 	size := len(buf)
 
 	// stdout is reserved for the plugin output, whose first line is parsed by Nagios
@@ -209,25 +236,23 @@ func main() {
 	}
 
 	nagios_status := NagiosOk
+	// fail records a reason and raises the status to at least the given level
+	fail := func(status int, format string, a ...interface{}) {
+		if status > nagios_status {
+			nagios_status = status
+		}
+		result_messages = append(result_messages, fmt.Sprintf(format, a...))
+	}
 
 	if opts.Expect == "" {
 		if resp.StatusCode >= 500 {
-			nagios_status = NagiosCritical
-			result_message = fmt.Sprintf("Unexpected http status code: %d", resp.StatusCode)
+			fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
 		} else if resp.StatusCode >= 400 {
-			nagios_status = NagiosWarning
-			result_message = fmt.Sprintf("Unexpected http status code: %d", resp.StatusCode)
+			fail(NagiosWarning, "Unexpected http status code: %d", resp.StatusCode)
 		}
-	} else {
-		nagios_status = NagiosWarning
-		for _, expect := range strings.Split(opts.Expect, ",") {
-			if status_text == expect {
-				nagios_status = NagiosOk
-			}
-		}
-		if nagios_status == NagiosWarning {
-			result_message = fmt.Sprintf("Unexpected http status code: %d", resp.StatusCode)
-		}
+	} else if !matchExpect(opts.Expect, resp.Proto, resp.Status, resp.StatusCode) {
+		// check_http returns CRITICAL when the status line does not match -e
+		fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
 	}
 
 	if opts.JsonKey != "" && opts.JsonValue != "" {
@@ -243,20 +268,15 @@ func main() {
 		// https://qiita.com/hnakamur/items/c3560a4b780487ef6065
 		v, _ := dyno.Get(d, s...)
 		if v != opts.JsonValue {
-			nagios_status = NagiosCritical
-			result_message = fmt.Sprintf("`%s` is not `%s`", opts.JsonKey, opts.JsonValue)
+			fail(NagiosCritical, "`%s` is not `%s`", opts.JsonKey, opts.JsonValue)
 		}
 		additional_out, err = prettyPrintJSON(buf)
 	}
 
-	if nagios_status == NagiosOk {
-		if diff.Seconds() > opts.Crit {
-			nagios_status = NagiosCritical
-			result_message = fmt.Sprintf("response time %.3fs exceeded critical threshold %.3fs", diff.Seconds(), opts.Crit)
-		} else if diff.Seconds() > opts.Warn {
-			nagios_status = NagiosWarning
-			result_message = fmt.Sprintf("response time %.3fs exceeded warning threshold %.3fs", diff.Seconds(), opts.Warn)
-		}
+	if diff.Seconds() > opts.Crit {
+		fail(NagiosCritical, "response time %.3fs exceeded critical threshold %.3fs", diff.Seconds(), opts.Crit)
+	} else if diff.Seconds() > opts.Warn {
+		fail(NagiosWarning, "response time %.3fs exceeded warning threshold %.3fs", diff.Seconds(), opts.Warn)
 	}
 
 	result_str := "OK"
@@ -266,8 +286,8 @@ func main() {
 		result_str = "CRITICAL"
 	}
 	fmt.Printf("HTTP %s: %s %s - %d bytes in %.3f second response time |time=%.6fs;;;%.6f size=%dB;;;0\n", result_str, resp.Proto, resp.Status, size, diff.Seconds(), diff.Seconds(), 0.0, size)
-	if result_message != "" {
-		fmt.Println(result_message)
+	for _, m := range result_messages {
+		fmt.Println(m)
 	}
 	if len(additional_out) > 0 {
 		fmt.Printf("\n%s", additional_out)
