@@ -43,6 +43,7 @@ type Options struct {
 	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
 	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
 	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
+	Authorization  string   `short:"a" long:"authorization" description:"Username:password on sites with basic authentication" value-name:"AUTH_PAIR"`
 	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
 	PrivateKeyFile string   `short:"K" long:"private-key" description:"Private Key File"`
 	VerifyCert     bool     `long:"verify-cert" description:"Verify the server certificate and host name"`
@@ -149,6 +150,10 @@ func parseArgs(args []string) (*config, error) {
 		return nil, err
 	}
 	cfg.minSize, cfg.maxSize = minSize, maxSize
+	// the value is not printed as it has the password
+	if cfg.Authorization != "" && !strings.Contains(cfg.Authorization, ":") {
+		return nil, errors.New("-a must be in the form of username:password")
+	}
 	if cfg.CACertFile != "" && !cfg.VerifyCert {
 		return nil, errors.New("--ca-cert requires --verify-cert")
 	}
@@ -278,6 +283,10 @@ func newRequest(cfg *config) (*http.Request, error) {
 
 	req.Host = cfg.hostHeader
 	req.Header.Set("User-Agent", cfg.UserAgent)
+	if cfg.Authorization != "" {
+		user, password, _ := strings.Cut(cfg.Authorization, ":")
+		req.SetBasicAuth(user, password)
+	}
 
 	for _, header := range cfg.Headers {
 		hdr := strings.SplitN(header, ": ", 2)
@@ -291,9 +300,20 @@ func newRequest(cfg *config) (*http.Request, error) {
 func printHeaders(w io.Writer, prefix string, h http.Header) {
 	for _, k := range slices.Sorted(maps.Keys(h)) {
 		for _, v := range h[k] {
+			if k == "Authorization" || k == "Proxy-Authorization" {
+				v = maskCredentials(v)
+			}
 			fmt.Fprintf(w, "%s%s: %s\n", prefix, k, v)
 		}
 	}
+}
+
+// maskCredentials keeps only the scheme of an Authorization header (e.g. "Basic ********")
+func maskCredentials(v string) string {
+	if scheme, _, ok := strings.Cut(v, " "); ok {
+		return scheme + " ********"
+	}
+	return "********"
 }
 
 // matchExpect reports whether the response matches one of the comma separated

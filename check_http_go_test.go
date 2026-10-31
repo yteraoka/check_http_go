@@ -183,6 +183,38 @@ func TestRequestBody(t *testing.T) {
 	}
 }
 
+func TestBasicAuth(t *testing.T) {
+	type credentials struct {
+		user, password string
+		ok             bool
+	}
+	creds := make(chan credentials, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, password, ok := r.BasicAuth()
+		creds <- credentials{user, password, ok}
+	}))
+	defer srv.Close()
+
+	t.Run("password with colon", func(t *testing.T) {
+		code, stdout, stderr := runCheckWithStderr(t, append(serverArgs(t, srv), "-a", "user:pa:ss", "-v")...)
+		assertResult(t, code, stdout, NagiosOk, "HTTP OK")
+		if got, want := receive(t, creds), (credentials{"user", "pa:ss", true}); got != want {
+			t.Errorf("credentials = %+v, want %+v", got, want)
+		}
+		// the credentials are masked in the --verbose output
+		if !strings.Contains(stderr, "> Authorization: Basic ********\n") || strings.Contains(stderr, "dXNlcjpwYTpzcw==") {
+			t.Errorf("Authorization header is not masked\nstderr:\n%s", stderr)
+		}
+	})
+	t.Run("no colon", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-a", "secret")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - -a must be in the form of username:password")
+		if strings.Contains(out, "secret") {
+			t.Errorf("output contains the credentials\noutput:\n%s", out)
+		}
+	})
+}
+
 func TestBuildURL(t *testing.T) {
 	tests := []struct {
 		host string
