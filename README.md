@@ -51,6 +51,9 @@ Application Options:
   -A, --useragent=   User-Agent header (default: check_http_go)
   -J, --client-cert= Client Certificate File
   -K, --private-key= Private Key File
+      --verify-cert  Verify the server certificate and host name
+      --ca-cert=     CA certificate file (PEM) to verify the server certificate
+                     with, used with --verify-cert
       --version      Print version
 
 Help Options:
@@ -84,11 +87,24 @@ Strings are compared as they are. Other values are compared with their JSON repr
 
 The result is CRITICAL when the value does not match, when the key is not found, or when the response body is not valid JSON. `--json-key` and `--json-value` must be specified together; `--json-value=` checks for an empty string.
 
+### TLS
+
+With `-S`, the host name given by `-H` (without the port) is sent as SNI, so the right certificate is selected even when connecting to an IP address with `-I`.
+
+The server certificate is not verified by default, as `check_http` does. Use `--verify-cert` to verify the certificate chain against the system CA certificates and the host name (`-H`, or `-I` if `-H` is not given). Use `--ca-cert` with it to verify against your own CA. Verification failures are CRITICAL.
+
+```
+check_http_go -S -I 192.0.2.1 -H www.example.com --verify-cert
+check_http_go -S -H internal.example.com --verify-cert --ca-cert=/etc/ssl/private-ca.pem
+```
+
 ### Differences from `check_http`
 
 - `-e`/`--expect`: a 3-digit value (e.g. `200`) is compared with the status code exactly, while other values (e.g. `HTTP/1.1 200`) are searched for in the status line as `check_http` does. Spaces around commas are ignored. If no value matches, the result is CRITICAL.
 - When multiple checks fail (status code, JSON value and response time), all reasons are printed and the most severe status is returned.
 - If `-w` is greater than `-c`, the result is UNKNOWN.
+- `-S` does not take a TLS version. `--sni` is not needed because SNI is always sent (see TLS above).
+- `--verify-cert` and `--ca-cert` are named after the same options of `check_curl`.
 
 Development
 -----------
