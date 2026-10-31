@@ -10,10 +10,12 @@ import (
 	"golang.org/x/net/http2"
 	"io/ioutil"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +26,7 @@ import (
 // https://qiita.com/t-mochizuki/items/4ffc478fedae7b776805
 
 type Options struct {
-	Verbose        bool     `short:"v" long:"verbose"    description:"Show verbose debug information"`
+	Verbose        bool     `short:"v" long:"verbose"    description:"Show verbose debug information to stderr"`
 	Vhost          string   `short:"H" long:"vhost"      description:"Host header"`
 	Ipaddr         string   `short:"I" long:"ipaddr"     description:"IP address"`
 	Port           int      `short:"p" long:"port"       description:"TCP Port" default:"0"`
@@ -80,6 +82,15 @@ func genTlsConfig(opts Options) *tls.Config {
 	}
 
 	return conf
+}
+
+// printHeaders writes headers to stderr in a stable order for --verbose
+func printHeaders(prefix string, h http.Header) {
+	for _, k := range slices.Sorted(maps.Keys(h)) {
+		for _, v := range h[k] {
+			fmt.Fprintf(os.Stderr, "%s%s: %s\n", prefix, k, v)
+		}
+	}
 }
 
 func prettyPrintJSON(b []byte) ([]byte, error) {
@@ -163,6 +174,12 @@ func main() {
 		req.Header.Set(hdr[0], hdr[1])
 	}
 
+	if opts.Verbose {
+		fmt.Fprintf(os.Stderr, "> %s %s\n", req.Method, req.URL)
+		fmt.Fprintf(os.Stderr, "> Host: %s\n", req.Host)
+		printHeaders("> ", req.Header)
+	}
+
 	t1 := time.Now()
 
 	resp, err := c.Do(req)
@@ -184,8 +201,11 @@ func main() {
 	status_text := strconv.Itoa(resp.StatusCode)
 	size := len(buf)
 
+	// stdout is reserved for the plugin output, whose first line is parsed by Nagios
 	if opts.Verbose {
-		fmt.Print(string(buf))
+		fmt.Fprintf(os.Stderr, "< %s %s\n", resp.Proto, resp.Status)
+		printHeaders("< ", resp.Header)
+		fmt.Fprintf(os.Stderr, "\n%s", buf)
 	}
 
 	nagios_status := NagiosOk

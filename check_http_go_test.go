@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -31,18 +32,26 @@ func TestMain(m *testing.M) {
 
 func runCheck(t *testing.T, args ...string) (int, string) {
 	t.Helper()
+	code, stdout, _ := runCheckWithStderr(t, args...)
+	return code, stdout
+}
+
+func runCheckWithStderr(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], args...)
 	// GORACE: skip the 1s sleep at exit when the test binary is built with -race
 	cmd.Env = append(os.Environ(), runMainEnv+"=1", "GORACE=atexit_sleep_ms=0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
 			t.Fatalf("failed to run check_http_go: %s", err)
 		}
-		return exitErr.ExitCode(), string(out)
+		return exitErr.ExitCode(), string(out), stderr.String()
 	}
-	return 0, string(out)
+	return 0, string(out), stderr.String()
 }
 
 // serverArgs returns -I and -p arguments pointing to srv
@@ -255,6 +264,35 @@ func TestPerfData(t *testing.T) {
 	re := regexp.MustCompile(`^HTTP OK: HTTP/1\.1 200 OK - 5 bytes in [0-9.]+ second response time \|time=[0-9.]+s;;;0\.000000 size=5B;;;0$`)
 	if !re.MatchString(firstLine) {
 		t.Errorf("first line %q does not match %s", firstLine, re)
+	}
+}
+
+func TestVerbose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Test", "1")
+		_, _ = fmt.Fprint(w, "hello\n")
+	}))
+	defer srv.Close()
+
+	code, stdout, stderr := runCheckWithStderr(t, append(serverArgs(t, srv), "-v", "-H", "www.example.com", "-k", "X-Foo: bar")...)
+	// stdout must start with the status line so that Nagios can parse it (#13)
+	if code != NagiosOk || !strings.HasPrefix(stdout, "HTTP OK: ") {
+		t.Errorf("exit code = %d, stdout does not start with the status line\nstdout:\n%s", code, stdout)
+	}
+	if strings.Contains(stdout, "hello") {
+		t.Errorf("stdout contains the response body\nstdout:\n%s", stdout)
+	}
+	for _, want := range []string{
+		"> GET " + srv.URL + "/\n",
+		"> Host: www.example.com\n",
+		"> X-Foo: bar\n",
+		"< HTTP/1.1 200 OK\n",
+		"< X-Test: 1\n",
+		"\nhello\n",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr does not contain %q\nstderr:\n%s", want, stderr)
+		}
 	}
 }
 
