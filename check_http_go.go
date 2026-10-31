@@ -24,38 +24,40 @@ import (
 )
 
 type Options struct {
-	Verbose        bool     `short:"v" long:"verbose"    description:"Show verbose debug information to stderr"`
-	Vhost          string   `short:"H" long:"vhost"      description:"Host header"`
-	IPAddr         string   `short:"I" long:"ipaddr"     description:"IP address"`
-	Port           int      `short:"p" long:"port"       description:"TCP Port" default:"0"`
-	Warn           float64  `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
-	Crit           float64  `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
-	Headers        []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
-	Timeout        float64  `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
-	URI            string   `short:"u" long:"uri"        description:"URI" default:"/"`
-	SSL            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
-	UseIPv4        bool     `short:"4" long:"use-ipv4"   description:"Use IPv4 connection"`
-	UseIPv6        bool     `short:"6" long:"use-ipv6"   description:"Use IPv6 connection"`
-	String         string   `short:"s" long:"string"     description:"String to expect in the content"`
-	Regex          string   `short:"r" long:"regex"      description:"Regular expression (RE2 syntax) to search for in the content"`
-	EregI          string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
-	InvertRegex    bool     `long:"invert-regex" description:"Return CRITICAL if the regular expression is found, OK if not"`
-	PageSize       string   `short:"m" long:"pagesize"   description:"Minimum page size required (bytes) : Maximum page size required (bytes)" value-name:"MIN[:MAX]"`
-	OnRedirect     string   `short:"f" long:"onredirect" description:"How to handle a redirect" choice:"ok" choice:"warning" choice:"critical" choice:"follow" default:"ok"`
-	MaxRedirs      int      `long:"max-redirs" description:"Maximal number of redirects with -f follow" default:"15"`
-	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
-	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
-	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
-	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST), POST by default with -P" default:"GET"`
-	Post           string   `short:"P" long:"post"       description:"URL-encoded HTTP POST data"`
-	ContentType    string   `short:"T" long:"content-type" description:"Content-Type header with -P" default-mask:"application/x-www-form-urlencoded"`
-	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
-	Authorization  string   `short:"a" long:"authorization" description:"Username:password on sites with basic authentication" value-name:"AUTH_PAIR"`
-	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
-	PrivateKeyFile string   `short:"K" long:"private-key" description:"Private Key File"`
-	VerifyCert     bool     `long:"verify-cert" description:"Verify the server certificate and host name"`
-	CACertFile     string   `long:"ca-cert" description:"CA certificate file (PEM) to verify the server certificate with, used with --verify-cert"`
-	Version        bool     `long:"version" description:"Print version"`
+	Verbose                  bool     `short:"v" long:"verbose"    description:"Show verbose debug information to stderr"`
+	Vhost                    string   `short:"H" long:"vhost"      description:"Host header"`
+	IPAddr                   string   `short:"I" long:"ipaddr"     description:"IP address"`
+	Port                     int      `short:"p" long:"port"       description:"TCP Port" default:"0"`
+	Warn                     float64  `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
+	Crit                     float64  `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
+	Headers                  []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
+	Timeout                  float64  `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
+	URI                      string   `short:"u" long:"uri"        description:"URI" default:"/"`
+	SSL                      bool     `short:"S" long:"ssl"        description:"Enable TLS"`
+	UseIPv4                  bool     `short:"4" long:"use-ipv4"   description:"Use IPv4 connection"`
+	UseIPv6                  bool     `short:"6" long:"use-ipv6"   description:"Use IPv6 connection"`
+	String                   string   `short:"s" long:"string"     description:"String to expect in the content"`
+	Regex                    string   `short:"r" long:"regex"      description:"Regular expression (RE2 syntax) to search for in the content"`
+	EregI                    string   `short:"R" long:"eregi"      description:"Case-insensitive regular expression (RE2 syntax) to search for in the content"`
+	InvertRegex              bool     `long:"invert-regex" description:"Return CRITICAL if the regular expression is found, OK if not"`
+	PageSize                 string   `short:"m" long:"pagesize"   description:"Minimum page size required (bytes) : Maximum page size required (bytes)" value-name:"MIN[:MAX]"`
+	OnRedirect               string   `short:"f" long:"onredirect" description:"How to handle a redirect" choice:"ok" choice:"warning" choice:"critical" choice:"follow" default:"ok"`
+	MaxRedirs                int      `long:"max-redirs" description:"Maximal number of redirects with -f follow" default:"15"`
+	Expect                   string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
+	JSONKey                  string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
+	JSONValue                string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
+	Method                   string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST), POST by default with -P" default:"GET"`
+	Post                     string   `short:"P" long:"post"       description:"URL-encoded HTTP POST data"`
+	ContentType              string   `short:"T" long:"content-type" description:"Content-Type header with -P" default-mask:"application/x-www-form-urlencoded"`
+	UserAgent                string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
+	Authorization            string   `short:"a" long:"authorization" description:"Username:password on sites with basic authentication" value-name:"AUTH_PAIR"`
+	ClientCertFile           string   `short:"J" long:"client-cert" description:"Client Certificate File"`
+	PrivateKeyFile           string   `short:"K" long:"private-key" description:"Private Key File"`
+	VerifyCert               bool     `long:"verify-cert" description:"Verify the server certificate and host name"`
+	Certificate              string   `short:"C" long:"certificate" description:"Minimum number of days a certificate has to be valid, implies -S. The URL is not checked unless --continue-after-certificate is given" value-name:"WARN[,CRIT]"`
+	ContinueAfterCertificate bool     `long:"continue-after-certificate" description:"Check the URL as well with -C"`
+	CACertFile               string   `long:"ca-cert" description:"CA certificate file (PEM) to verify the server certificate with, used with --verify-cert"`
+	Version                  bool     `long:"version" description:"Print version"`
 }
 
 const (
@@ -89,6 +91,10 @@ type config struct {
 	// regex is -r or -R compiled, regexSource is the expression as given
 	regex       *regexp.Regexp
 	regexSource string
+	// certWarnDays and certCritDays are from -C
+	certCheck    bool
+	certWarnDays int
+	certCritDays int
 	// minSize and maxSize are from -m, maxSize is -1 if not given
 	minSize    int
 	maxSize    int
@@ -132,6 +138,18 @@ func parseArgs(args []string) (*config, error) {
 	}
 	if cfg.jsonCheck && cfg.JSONKey == "" {
 		return nil, errors.New("--json-key must not be empty")
+	}
+	if cfg.Certificate != "" {
+		cfg.certCheck = true
+		// -C implies -S as check_http does
+		cfg.SSL = true
+		warn, crit, err := parseCertificateDays(cfg.Certificate)
+		if err != nil {
+			return nil, err
+		}
+		cfg.certWarnDays, cfg.certCritDays = warn, crit
+	} else if cfg.ContinueAfterCertificate {
+		return nil, errors.New("--continue-after-certificate requires -C")
 	}
 	if cfg.UseIPv4 && cfg.UseIPv6 {
 		return nil, errors.New("-4 and -6 cannot be specified together")
@@ -197,6 +215,46 @@ func parseArgs(args []string) (*config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// parseCertificateDays parses -C in the form of WARN[,CRIT], CRIT is 0 if not given
+func parseCertificateDays(s string) (int, int, error) {
+	warnStr, critStr, hasCrit := strings.Cut(s, ",")
+	warn, err := strconv.Atoi(warnStr)
+	if err != nil || warn < 0 {
+		return 0, 0, fmt.Errorf("invalid -C: %s", s)
+	}
+	if !hasCrit {
+		return warn, 0, nil
+	}
+	crit, err := strconv.Atoi(critStr)
+	if err != nil || crit < 0 || crit > warn {
+		return 0, 0, fmt.Errorf("invalid -C: %s", s)
+	}
+	return warn, crit, nil
+}
+
+// certificateStatus checks the days left until the certificate expires. The
+// messages follow those of check_http.
+func certificateStatus(cert *x509.Certificate, warnDays int, critDays int, now time.Time) (int, string) {
+	name := cert.Subject.CommonName
+	if name == "" && len(cert.DNSNames) > 0 {
+		name = cert.DNSNames[0]
+	}
+	expiry := cert.NotAfter.UTC().Format("2006-01-02 15:04 -0700")
+	left := cert.NotAfter.Sub(now)
+	days := int(left.Hours() / 24)
+	day := 24 * time.Hour
+	switch {
+	case left < 0:
+		return NagiosCritical, fmt.Sprintf("Certificate '%s' expired on %s", name, expiry)
+	case left < time.Duration(critDays)*day:
+		return NagiosCritical, fmt.Sprintf("Certificate '%s' expires in %d day(s) (%s)", name, days, expiry)
+	case left < time.Duration(warnDays)*day:
+		return NagiosWarning, fmt.Sprintf("Certificate '%s' expires in %d day(s) (%s)", name, days, expiry)
+	default:
+		return NagiosOk, fmt.Sprintf("Certificate '%s' will expire on %s", name, expiry)
+	}
 }
 
 // parsePageSize parses -m in the form of MIN[:MAX] and returns -1 as max if it is not given
@@ -276,6 +334,43 @@ func genTLSConfig(opts Options, serverName string) (*tls.Config, error) {
 	return conf, nil
 }
 
+// network returns the network to dial for -4 and -6
+func (cfg *config) network() string {
+	switch {
+	case cfg.UseIPv4:
+		return "tcp4"
+	case cfg.UseIPv6:
+		return "tcp6"
+	default:
+		return "tcp"
+	}
+}
+
+func (cfg *config) timeout() time.Duration {
+	return time.Duration(cfg.Timeout * float64(time.Second))
+}
+
+// runCertificateCheck checks only the certificate for -C without --continue-after-certificate
+func runCertificateCheck(cfg *config, stdout io.Writer) int {
+	tlsConfig, err := genTLSConfig(cfg.Options, tlsServerName(cfg.hostHeader))
+	if err != nil {
+		return unknown(stdout, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout())
+	defer cancel()
+	dialer := &tls.Dialer{Config: tlsConfig}
+	conn, err := dialer.DialContext(ctx, cfg.network(), net.JoinHostPort(cfg.IPAddr, strconv.Itoa(cfg.Port)))
+	if err != nil {
+		fmt.Fprintf(stdout, "SSL CRITICAL - %s\n", err)
+		return NagiosCritical
+	}
+	defer conn.Close()
+	cert := conn.(*tls.Conn).ConnectionState().PeerCertificates[0]
+	status, message := certificateStatus(cert, cfg.certWarnDays, cfg.certCritDays, time.Now())
+	fmt.Fprintf(stdout, "SSL %s - %s.\n", statusText(status), message)
+	return status
+}
+
 func newClient(cfg *config) (*http.Client, error) {
 	tlsConfig, err := genTLSConfig(cfg.Options, tlsServerName(cfg.hostHeader))
 	if err != nil {
@@ -287,18 +382,14 @@ func newClient(cfg *config) (*http.Client, error) {
 		// HTTP/2 is not enabled by default when TLSClientConfig is set
 		ForceAttemptHTTP2: true,
 	}
-	if cfg.UseIPv4 || cfg.UseIPv6 {
-		network := "tcp4"
-		if cfg.UseIPv6 {
-			network = "tcp6"
-		}
+	if network := cfg.network(); network != "tcp" {
 		var dialer net.Dialer
 		tr.DialContext = func(ctx context.Context, _ string, addr string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, addr)
 		}
 	}
 	return &http.Client{
-		Timeout: time.Duration(cfg.Timeout * float64(time.Second)),
+		Timeout: cfg.timeout(),
 		// a redirect is followed only with -f follow, otherwise the 3xx response is checked
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			// via has the requests so far, so following this one makes len(via) redirects
@@ -587,6 +678,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "check_http_go: %s\n", getVersion())
 		return NagiosOk
 	}
+	if cfg.certCheck && !cfg.ContinueAfterCertificate {
+		return runCertificateCheck(cfg, stdout)
+	}
 
 	client, err := newClient(cfg)
 	if err != nil {
@@ -630,6 +724,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		r.checkJSON(cfg, body)
 	}
 	r.checkResponseTime(cfg, elapsed)
+	if cfg.certCheck && resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		if status, message := certificateStatus(resp.TLS.PeerCertificates[0], cfg.certWarnDays, cfg.certCritDays, time.Now()); status != NagiosOk {
+			r.fail(status, "%s", message)
+		}
+	}
 
 	fmt.Fprint(stdout, formatOutput(cfg, resp, len(body), elapsed, r))
 	return r.status

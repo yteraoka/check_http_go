@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -793,6 +798,91 @@ func TestClientCert(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			code, out := runCheck(t, append(append(serverArgs(t, srv), "-S"), tt.args...)...)
 			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
+	}
+}
+
+// newTLSServerWithExpiry starts a TLS server with a self-signed certificate for
+// www.example.com and 127.0.0.1 that expires at notAfter
+func newTLSServerWithExpiry(t *testing.T, notAfter time.Time, handler http.Handler) *httptest.Server {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "www.example.com"},
+		NotBefore:    notAfter.Add(-365 * 24 * time.Hour),
+		NotAfter:     notAfter,
+		DNSNames:     []string{"www.example.com"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(handler)
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	srv.StartTLS()
+	return srv
+}
+
+func TestCertificateExpiry(t *testing.T) {
+	requests := make(chan struct{}, 1)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- struct{}{}
+	})
+	// an extra hour so that the days left are exactly 10 while the test runs
+	in10Days := time.Now().Add(10*24*time.Hour + time.Hour).Truncate(time.Second)
+	expiring := newTLSServerWithExpiry(t, in10Days, handler)
+	defer expiring.Close()
+	yesterday := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	expired := newTLSServerWithExpiry(t, yesterday, handler)
+	defer expired.Close()
+	format := func(tm time.Time) string { return tm.UTC().Format("2006-01-02 15:04 -0700") }
+
+	tests := []struct {
+		name        string
+		srv         *httptest.Server
+		args        []string
+		wantCode    int
+		wantOut     string
+		wantRequest bool
+	}{
+		// -C implies -S and checks only the certificate as check_http does
+		{"ok", expiring, []string{"-C", "5"}, NagiosOk,
+			"SSL OK - Certificate 'www.example.com' will expire on " + format(in10Days) + ".\n", false},
+		{"warning", expiring, []string{"-C", "30"}, NagiosWarning,
+			"SSL WARNING - Certificate 'www.example.com' expires in 10 day(s) (" + format(in10Days) + ").\n", false},
+		{"critical", expiring, []string{"-C", "30,14"}, NagiosCritical,
+			"SSL CRITICAL - Certificate 'www.example.com' expires in 10 day(s) (" + format(in10Days) + ").\n", false},
+		{"expired", expired, []string{"-C", "30"}, NagiosCritical,
+			"SSL CRITICAL - Certificate 'www.example.com' expired on " + format(yesterday) + ".\n", false},
+		// --continue-after-certificate checks the URL as well
+		{"continue ok", expiring, []string{"-C", "5", "--continue-after-certificate"}, NagiosOk,
+			"HTTP OK: HTTP/1.1 200 OK - 0 bytes in ", true},
+		{"continue warning", expiring, []string{"-C", "30", "--continue-after-certificate"}, NagiosWarning,
+			"HTTP WARNING: HTTP/1.1 200 OK - Certificate 'www.example.com' expires in 10 day(s) (" + format(in10Days) + ") - 0 bytes in ", true},
+		{"invalid", expiring, []string{"-C", "a"}, NagiosUnknown, "HTTP UNKNOWN - invalid -C: a", false},
+		{"critical greater than warning", expiring, []string{"-C", "14,30"}, NagiosUnknown, "HTTP UNKNOWN - invalid -C: 14,30", false},
+		{"--continue-after-certificate without -C", expiring, []string{"-S", "--continue-after-certificate"}, NagiosUnknown,
+			"HTTP UNKNOWN - --continue-after-certificate requires -C", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, tt.srv), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+			select {
+			case <-requests:
+				if !tt.wantRequest {
+					t.Error("the URL was requested")
+				}
+			default:
+				if tt.wantRequest {
+					t.Error("the URL was not requested")
+				}
+			}
 		})
 	}
 }
