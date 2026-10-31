@@ -42,7 +42,7 @@ Application Options:
   -t, --timeout=     Timeout in second (default: 10)
   -u, --uri=         URI (default: /)
   -S, --ssl          Enable TLS
-  -e, --expect=      Expected status codes (csv)
+  -e, --expect=      Expected status codes or strings in the status line (csv)
       --json-key=    JSON key
       --json-value=  Expected json value
   -j, --method=      HTTP METHOD (GET, HEAD, POST) (default: GET)
@@ -70,6 +70,12 @@ use `--json-key` and `--json-value`
 ```
 check_http_go ... --json-key=xxx.status --json-value=ok
 ```
+
+### Differences from `check_http`
+
+- `-e`/`--expect`: a 3-digit value (e.g. `200`) is compared with the status code exactly, while other values (e.g. `HTTP/1.1 200`) are searched for in the status line as `check_http` does. Spaces around commas are ignored. If no value matches, the result is CRITICAL.
+- When multiple checks fail (status code, JSON value and response time), all reasons are printed and the most severe status is returned.
+- If `-w` is greater than `-c`, the result is UNKNOWN.
 
 Development
 -----------
