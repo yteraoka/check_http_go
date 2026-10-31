@@ -456,8 +456,17 @@ func TestTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	code, out := runCheck(t, append(serverArgs(t, srv), "-t", "1")...)
-	assertResult(t, code, out, NagiosCritical, "HTTP CRITICAL - ")
+	for _, timeout := range []string{"1", "0.5"} {
+		t.Run(timeout, func(t *testing.T) {
+			start := time.Now()
+			code, out := runCheck(t, append(serverArgs(t, srv), "-t", timeout)...)
+			assertResult(t, code, out, NagiosCritical, "HTTP CRITICAL - ")
+			want, _ := strconv.ParseFloat(timeout, 64)
+			if elapsed := time.Since(start).Seconds(); elapsed < want || elapsed > want+0.5 {
+				t.Errorf("elapsed %.3fs, want about %ss", elapsed, timeout)
+			}
+		})
+	}
 }
 
 func TestConnectionRefused(t *testing.T) {
@@ -636,6 +645,7 @@ func TestPerfData(t *testing.T) {
 	}{
 		{"default", nil, `time=[0-9.]+s;5\.000000;10\.000000;0\.000000;10\.000000 size=5B;;;0`},
 		{"thresholds", []string{"-w", "1.5", "-c", "3", "-t", "4"}, `time=[0-9.]+s;1\.500000;3\.000000;0\.000000;4\.000000 size=5B;;;0`},
+		{"decimal timeout", []string{"-t", "2.5"}, `time=[0-9.]+s;5\.000000;10\.000000;0\.000000;2\.500000 size=5B;;;0`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

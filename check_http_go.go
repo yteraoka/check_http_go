@@ -29,7 +29,7 @@ type Options struct {
 	Warn           float64  `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
 	Crit           float64  `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
 	Headers        []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
-	Timeout        int      `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
+	Timeout        float64  `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
 	URI            string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	SSL            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
@@ -200,7 +200,7 @@ func newClient(cfg *config) (*http.Client, error) {
 		return nil, err
 	}
 	return &http.Client{
-		Timeout: time.Duration(cfg.Timeout) * time.Second,
+		Timeout: time.Duration(cfg.Timeout * float64(time.Second)),
 		// a redirect is not followed and the 3xx response is checked
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -404,7 +404,7 @@ func formatOutput(cfg *config, resp *http.Response, size int, elapsed time.Durat
 	}
 	// same format as check_http: the perfdata of time has the thresholds, 0 as min and the timeout as max
 	fmt.Fprintf(&out, "HTTP %s: %s %s - %s%d bytes in %.3f second response time |time=%.6fs;%.6f;%.6f;0.000000;%.6f size=%dB;;;0\n",
-		statusText(r.status), resp.Proto, resp.Status, reasons, size, elapsed.Seconds(), elapsed.Seconds(), cfg.Warn, cfg.Crit, float64(cfg.Timeout), size)
+		statusText(r.status), resp.Proto, resp.Status, reasons, size, elapsed.Seconds(), elapsed.Seconds(), cfg.Warn, cfg.Crit, cfg.Timeout, size)
 	if len(r.longOutput) > 0 {
 		fmt.Fprintf(&out, "\n%s", r.longOutput)
 	}
