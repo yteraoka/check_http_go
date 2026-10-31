@@ -41,7 +41,9 @@ type Options struct {
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
 	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
 	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
-	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
+	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST), POST by default with -P" default:"GET"`
+	Post           string   `short:"P" long:"post"       description:"URL-encoded HTTP POST data"`
+	ContentType    string   `short:"T" long:"content-type" description:"Content-Type header with -P" default-mask:"application/x-www-form-urlencoded"`
 	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
 	Authorization  string   `short:"a" long:"authorization" description:"Username:password on sites with basic authentication" value-name:"AUTH_PAIR"`
 	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
@@ -150,6 +152,17 @@ func parseArgs(args []string) (*config, error) {
 		return nil, err
 	}
 	cfg.minSize, cfg.maxSize = minSize, maxSize
+	if cfg.Post != "" {
+		// IsSet is also true when the default value is used
+		if method := parser.FindOptionByLongName("method"); !method.IsSet() || method.IsSetDefault() {
+			cfg.Method = http.MethodPost
+		}
+		if cfg.ContentType == "" {
+			cfg.ContentType = "application/x-www-form-urlencoded"
+		}
+	} else if cfg.ContentType != "" {
+		return nil, errors.New("-T requires -P")
+	}
 	// the value is not printed as it has the password
 	if cfg.Authorization != "" && !strings.Contains(cfg.Authorization, ":") {
 		return nil, errors.New("-a must be in the form of username:password")
@@ -276,9 +289,16 @@ func newClient(cfg *config) (*http.Client, error) {
 }
 
 func newRequest(cfg *config) (*http.Request, error) {
-	req, err := http.NewRequest(cfg.Method, buildURL(cfg.scheme, cfg.IPAddr, cfg.Port, cfg.URI), nil)
+	var body io.Reader
+	if cfg.Post != "" {
+		body = strings.NewReader(cfg.Post)
+	}
+	req, err := http.NewRequest(cfg.Method, buildURL(cfg.scheme, cfg.IPAddr, cfg.Port, cfg.URI), body)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.ContentType != "" {
+		req.Header.Set("Content-Type", cfg.ContentType)
 	}
 
 	req.Host = cfg.hostHeader

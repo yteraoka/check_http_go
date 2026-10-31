@@ -159,28 +159,43 @@ func TestRequest(t *testing.T) {
 func TestRequestBody(t *testing.T) {
 	type request struct {
 		method        string
+		contentType   string
 		contentLength string
 		body          string
 	}
 	reqs := make(chan request, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
-		reqs <- request{r.Method, r.Header.Get("Content-Length"), string(b)}
+		reqs <- request{r.Method, r.Header.Get("Content-Type"), r.Header.Get("Content-Length"), string(b)}
 	}))
 	defer srv.Close()
 
-	for _, tt := range []request{
-		{http.MethodGet, "", ""},
-		{http.MethodPost, "0", ""},
-	} {
-		t.Run(tt.method, func(t *testing.T) {
-			code, out := runCheck(t, append(serverArgs(t, srv), "-j", tt.method)...)
+	tests := []struct {
+		name string
+		args []string
+		want request
+	}{
+		{"GET", []string{"-j", "GET"}, request{http.MethodGet, "", "", ""}},
+		{"POST without body", []string{"-j", "POST"}, request{http.MethodPost, "", "0", ""}},
+		// -P sends POST unless -j is given
+		{"-P", []string{"-P", "a=1&b=2"}, request{http.MethodPost, "application/x-www-form-urlencoded", "7", "a=1&b=2"}},
+		{"-P with -T", []string{"-P", `{"a":1}`, "-T", "application/json"}, request{http.MethodPost, "application/json", "7", `{"a":1}`}},
+		{"-P with -j", []string{"-P", "a=1", "-j", "PUT"}, request{http.MethodPut, "application/x-www-form-urlencoded", "3", "a=1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), tt.args...)...)
 			assertResult(t, code, out, NagiosOk, "HTTP OK")
-			if got := receive(t, reqs); got != tt {
-				t.Errorf("request = %+v, want %+v", got, tt)
+			if got := receive(t, reqs); got != tt.want {
+				t.Errorf("request = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
+
+	t.Run("-T without -P", func(t *testing.T) {
+		code, out := runCheck(t, append(serverArgs(t, srv), "-T", "application/json")...)
+		assertResult(t, code, out, NagiosUnknown, "HTTP UNKNOWN - -T requires -P")
+	})
 }
 
 func TestBasicAuth(t *testing.T) {
