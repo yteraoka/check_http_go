@@ -1,0 +1,7 @@
+version: "2"
+
+linters:
+  exclusions:
+    presets:
+      # errors of writing the plugin output and closing a body cannot be handled meaningfully
+      - std-error-handling

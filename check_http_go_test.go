@@ -3,15 +3,15 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -20,41 +20,19 @@ import (
 	"time"
 )
 
-// main() calls os.Exit, so each test case re-executes this test binary as
-// check_http_go and inspects its stdout and exit code.
-const runMainEnv = "CHECK_HTTP_GO_RUN_MAIN"
-
-func TestMain(m *testing.M) {
-	if os.Getenv(runMainEnv) == "1" {
-		os.Args = append([]string{"check_http_go"}, os.Args[1:]...)
-		main()
-		return
-	}
-	os.Exit(m.Run())
-}
-
 func runCheck(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	code, stdout, _ := runCheckWithStderr(t, args...)
 	return code, stdout
 }
 
+// runCheckWithStderr runs the check with the command line arguments and returns
+// the exit status, the plugin output (stdout) and the --verbose output (stderr)
 func runCheckWithStderr(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], args...)
-	// GORACE: skip the 1s sleep at exit when the test binary is built with -race
-	cmd.Env = append(os.Environ(), runMainEnv+"=1", "GORACE=atexit_sleep_ms=0")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("failed to run check_http_go: %s", err)
-		}
-		return exitErr.ExitCode(), string(out), stderr.String()
-	}
-	return 0, string(out), stderr.String()
+	var stdout, stderr bytes.Buffer
+	code := run(args, &stdout, &stderr)
+	return code, stdout.String(), stderr.String()
 }
 
 // receive waits for a value sent from a test server handler. It fails instead
@@ -176,6 +154,33 @@ func TestRequest(t *testing.T) {
 			t.Errorf("headers = %v, want X-Foo: bar and X-Baz: qux", got.Header)
 		}
 	})
+}
+
+func TestRequestBody(t *testing.T) {
+	type request struct {
+		method        string
+		contentLength string
+		body          string
+	}
+	reqs := make(chan request, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		reqs <- request{r.Method, r.Header.Get("Content-Length"), string(b)}
+	}))
+	defer srv.Close()
+
+	for _, tt := range []request{
+		{http.MethodGet, "", ""},
+		{http.MethodPost, "0", ""},
+	} {
+		t.Run(tt.method, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), "-j", tt.method)...)
+			assertResult(t, code, out, NagiosOk, "HTTP OK")
+			if got := receive(t, reqs); got != tt {
+				t.Errorf("request = %+v, want %+v", got, tt)
+			}
+		})
+	}
 }
 
 func TestBuildURL(t *testing.T) {
@@ -536,6 +541,46 @@ func TestTLSServerName(t *testing.T) {
 		if got := tlsServerName(host); got != want {
 			t.Errorf("tlsServerName(%q) = %q, want %q", host, got, want)
 		}
+	}
+}
+
+func TestClientCert(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	srv.StartTLS()
+	defer srv.Close()
+
+	// use the certificate and the key of the test server as the client certificate
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	cert := srv.TLS.Certificates[0]
+	key, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"with client certificate", []string{"-J", certFile, "-K", keyFile}, NagiosOk, "HTTP OK"},
+		{"without client certificate", nil, NagiosCritical, "HTTP CRITICAL - "},
+		{"key not found", []string{"-J", certFile, "-K", filepath.Join(dir, "missing.pem")}, NagiosUnknown, "HTTP UNKNOWN - "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(append(serverArgs(t, srv), "-S"), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
 	}
 }
 

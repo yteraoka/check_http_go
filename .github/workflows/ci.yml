@@ -29,9 +29,6 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -40,8 +37,6 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15
-          # Existing findings are tracked in #11 and #19. Remove this after they are fixed.
-          only-new-issues: true
 
   goreleaser-check:
     runs-on: ubuntu-latest
