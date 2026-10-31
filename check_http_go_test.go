@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -176,6 +178,33 @@ func TestRequest(t *testing.T) {
 			t.Errorf("headers = %v, want X-Foo: bar and X-Baz: qux", got.Header)
 		}
 	})
+}
+
+func TestRequestBody(t *testing.T) {
+	type request struct {
+		method        string
+		contentLength string
+		body          string
+	}
+	reqs := make(chan request, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		reqs <- request{r.Method, r.Header.Get("Content-Length"), string(b)}
+	}))
+	defer srv.Close()
+
+	for _, tt := range []request{
+		{http.MethodGet, "", ""},
+		{http.MethodPost, "0", ""},
+	} {
+		t.Run(tt.method, func(t *testing.T) {
+			code, out := runCheck(t, append(serverArgs(t, srv), "-j", tt.method)...)
+			assertResult(t, code, out, NagiosOk, "HTTP OK")
+			if got := receive(t, reqs); got != tt {
+				t.Errorf("request = %+v, want %+v", got, tt)
+			}
+		})
+	}
 }
 
 func TestBuildURL(t *testing.T) {
@@ -536,6 +565,46 @@ func TestTLSServerName(t *testing.T) {
 		if got := tlsServerName(host); got != want {
 			t.Errorf("tlsServerName(%q) = %q, want %q", host, got, want)
 		}
+	}
+}
+
+func TestClientCert(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	srv.StartTLS()
+	defer srv.Close()
+
+	// use the certificate and the key of the test server as the client certificate
+	dir := t.TempDir()
+	certFile := filepath.Join(dir, "cert.pem")
+	keyFile := filepath.Join(dir, "key.pem")
+	cert := srv.TLS.Certificates[0]
+	key, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantOut  string
+	}{
+		{"with client certificate", []string{"-J", certFile, "-K", keyFile}, NagiosOk, "HTTP OK"},
+		{"without client certificate", nil, NagiosCritical, "HTTP CRITICAL - "},
+		{"key not found", []string{"-J", certFile, "-K", filepath.Join(dir, "missing.pem")}, NagiosUnknown, "HTTP UNKNOWN - "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, out := runCheck(t, append(append(serverArgs(t, srv), "-S"), tt.args...)...)
+			assertResult(t, code, out, tt.wantCode, tt.wantOut)
+		})
 	}
 }
 
