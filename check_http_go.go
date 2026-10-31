@@ -30,7 +30,7 @@ type Options struct {
 	Port                     int      `short:"p" long:"port"       description:"TCP Port" default:"0"`
 	Warn                     float64  `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
 	Crit                     float64  `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
-	Headers                  []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
+	Headers                  []string `short:"k" long:"header"    description:"Additional header in the form of \"Name: value\", acceptable multiple times"`
 	Timeout                  float64  `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
 	URI                      string   `short:"u" long:"uri"        description:"URI" default:"/"`
 	SSL                      bool     `short:"S" long:"ssl"        description:"Enable TLS"`
@@ -91,6 +91,8 @@ type config struct {
 	// regex is -r or -R compiled, regexSource is the expression as given
 	regex       *regexp.Regexp
 	regexSource string
+	// headers are -k parsed into names and values
+	headers []header
 	// certWarnDays and certCritDays are from -C
 	certCheck    bool
 	certWarnDays int
@@ -138,6 +140,13 @@ func parseArgs(args []string) (*config, error) {
 	}
 	if cfg.jsonCheck && cfg.JSONKey == "" {
 		return nil, errors.New("--json-key must not be empty")
+	}
+	for _, h := range cfg.Headers {
+		name, value, err := parseHeader(h)
+		if err != nil {
+			return nil, err
+		}
+		cfg.headers = append(cfg.headers, header{name, value})
 	}
 	if cfg.Certificate != "" {
 		cfg.certCheck = true
@@ -221,6 +230,53 @@ func parseArgs(args []string) (*config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+type header struct {
+	name  string
+	value string
+}
+
+// parseHeader parses -k in the form of "Name: value", where the space after the
+// colon is optional. The value is not put in the errors as it may have a secret.
+func parseHeader(s string) (string, string, error) {
+	name, value, ok := strings.Cut(s, ":")
+	if !ok {
+		return "", "", errors.New(`-k must be in the form of "Name: value"`)
+	}
+	name = strings.TrimSpace(name)
+	if !validHeaderName(name) {
+		return "", "", fmt.Errorf("invalid header name in -k: %q", name)
+	}
+	value = strings.TrimSpace(value)
+	if !validHeaderValue(value) {
+		return "", "", fmt.Errorf("invalid header value in -k: %q", name)
+	}
+	return name, value, nil
+}
+
+// validHeaderName reports whether s is a token of RFC 9110
+func validHeaderName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range []byte(s) {
+		isAlnum := 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
+		if !isAlnum && !strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+// validHeaderValue reports whether s has no control characters other than tab
+func validHeaderValue(s string) bool {
+	for _, c := range []byte(s) {
+		if c < ' ' && c != '\t' || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // parseCertificateDays parses -C in the form of WARN[,CRIT], CRIT is 0 if not given
@@ -428,9 +484,8 @@ func newRequest(cfg *config) (*http.Request, error) {
 		req.SetBasicAuth(user, password)
 	}
 
-	for _, header := range cfg.Headers {
-		hdr := strings.SplitN(header, ": ", 2)
-		req.Header.Set(hdr[0], hdr[1])
+	for _, h := range cfg.headers {
+		req.Header.Set(h.name, h.value)
 	}
 
 	return req, nil
