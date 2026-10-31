@@ -5,41 +5,36 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
-	flags "github.com/jessevdk/go-flags"
-	"golang.org/x/net/http2"
 	"io"
-	"io/ioutil"
 	"maps"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
-)
 
-// https://golang.org/pkg/net/http/
-// https://godoc.org/github.com/jessevdk/go-flags
-// https://qiita.com/t-mochizuki/items/4ffc478fedae7b776805
+	flags "github.com/jessevdk/go-flags"
+)
 
 type Options struct {
 	Verbose        bool     `short:"v" long:"verbose"    description:"Show verbose debug information to stderr"`
 	Vhost          string   `short:"H" long:"vhost"      description:"Host header"`
-	Ipaddr         string   `short:"I" long:"ipaddr"     description:"IP address"`
+	IPAddr         string   `short:"I" long:"ipaddr"     description:"IP address"`
 	Port           int      `short:"p" long:"port"       description:"TCP Port" default:"0"`
 	Warn           float64  `short:"w" long:"warn"       description:"Warning time in second" default:"5.0"`
 	Crit           float64  `short:"c" long:"crit"       description:"Critical time in second" default:"10.0"`
 	Headers        []string `short:"k" long:"header"    description:"additional headers, acceptable multiple times"`
 	Timeout        int      `short:"t" long:"timeout"    description:"Timeout in second" default:"10"`
-	Uri            string   `short:"u" long:"uri"        description:"URI" default:"/"`
-	Ssl            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
+	URI            string   `short:"u" long:"uri"        description:"URI" default:"/"`
+	SSL            bool     `short:"S" long:"ssl"        description:"Enable TLS"`
 	Expect         string   `short:"e" long:"expect"     description:"Expected status codes or strings in the status line (csv)" default:""`
-	JsonKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
-	JsonValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
+	JSONKey        string   `long:"json-key"   description:"Dot separated JSON key, array elements by index (e.g. items.0.status)"`
+	JSONValue      string   `long:"json-value" description:"Expected JSON value, non-string values as JSON (e.g. 1, true, null)"`
 	Method         string   `short:"j" long:"method"     description:"HTTP METHOD (GET, HEAD, POST)" default:"GET"`
 	UserAgent      string   `short:"A" long:"useragent"  description:"User-Agent header" default:"check_http_go"`
 	ClientCertFile string   `short:"J" long:"client-cert" description:"Client Certificate File"`
@@ -70,6 +65,78 @@ func getVersion() string {
 	return version
 }
 
+// errUsage is returned when go-flags has already printed the error or the help
+var errUsage = errors.New("usage error")
+
+// config is the validated options and the values derived from them
+type config struct {
+	Options
+	jsonCheck  bool
+	scheme     string
+	hostHeader string
+}
+
+// parseArgs parses and validates the command line arguments
+func parseArgs(args []string) (*config, error) {
+	cfg := &config{scheme: "http"}
+	parser := flags.NewParser(&cfg.Options, flags.Default)
+	if _, err := parser.ParseArgs(args); err != nil {
+		return nil, errUsage
+	}
+	if cfg.Version {
+		return cfg, nil
+	}
+
+	if cfg.IPAddr == "" && cfg.Vhost != "" {
+		cfg.IPAddr = cfg.Vhost
+		// -H may have a port (e.g. example.com:5000), which is used to connect to
+		// unless -p is given, as check_http does
+		if host, port, err := net.SplitHostPort(cfg.Vhost); err == nil {
+			cfg.IPAddr = host
+			if cfg.Port == 0 {
+				if cfg.Port, err = strconv.Atoi(port); err != nil {
+					return nil, fmt.Errorf("invalid port in -H: %s", cfg.Vhost)
+				}
+			}
+		}
+	}
+	// accept an IPv6 address in brackets (e.g. [::1]) as well
+	cfg.IPAddr = strings.TrimSuffix(strings.TrimPrefix(cfg.IPAddr, "["), "]")
+	if cfg.IPAddr == "" {
+		return nil, errors.New("-H or -I is required")
+	}
+	// IsSet is used instead of comparing with "" so that an empty --json-value can be checked
+	cfg.jsonCheck = parser.FindOptionByLongName("json-key").IsSet()
+	if cfg.jsonCheck != parser.FindOptionByLongName("json-value").IsSet() {
+		return nil, errors.New("--json-key and --json-value must be specified together")
+	}
+	if cfg.jsonCheck && cfg.JSONKey == "" {
+		return nil, errors.New("--json-key must not be empty")
+	}
+	if cfg.CACertFile != "" && !cfg.VerifyCert {
+		return nil, errors.New("--ca-cert requires --verify-cert")
+	}
+	if cfg.Warn > cfg.Crit {
+		return nil, fmt.Errorf("warning threshold %.3fs must not be greater than critical threshold %.3fs", cfg.Warn, cfg.Crit)
+	}
+
+	cfg.hostHeader = hostHeader(cfg.IPAddr)
+	if cfg.Vhost != "" {
+		cfg.hostHeader = hostHeader(cfg.Vhost)
+	}
+	if cfg.SSL {
+		cfg.scheme = "https"
+	}
+	if cfg.Port == 0 {
+		if cfg.SSL {
+			cfg.Port = 443
+		} else {
+			cfg.Port = 80
+		}
+	}
+	return cfg, nil
+}
+
 // tlsServerName strips the port from the -H value (e.g. example.com:5000)
 func tlsServerName(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -96,7 +163,7 @@ func buildURL(scheme string, host string, port int, uri string) string {
 	return scheme + "://" + net.JoinHostPort(host, strconv.Itoa(port)) + uri
 }
 
-func genTlsConfig(opts Options, serverName string) *tls.Config {
+func genTLSConfig(opts Options, serverName string) (*tls.Config, error) {
 	conf := &tls.Config{
 		// http.Transport uses the URL host (the -I value) unless ServerName is set.
 		// It is sent as SNI unless it is an IP address and verified with --verify-cert.
@@ -107,11 +174,11 @@ func genTlsConfig(opts Options, serverName string) *tls.Config {
 	if opts.CACertFile != "" {
 		b, err := os.ReadFile(opts.CACertFile)
 		if err != nil {
-			unknown("%s", err)
+			return nil, err
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(b) {
-			unknown("no certificates found in %s", opts.CACertFile)
+			return nil, fmt.Errorf("no certificates found in %s", opts.CACertFile)
 		}
 		conf.RootCAs = pool
 	}
@@ -119,27 +186,58 @@ func genTlsConfig(opts Options, serverName string) *tls.Config {
 	if opts.ClientCertFile != "" && opts.PrivateKeyFile != "" {
 		cert, err := tls.LoadX509KeyPair(opts.ClientCertFile, opts.PrivateKeyFile)
 		if err != nil {
-			unknown("%s", err)
+			return nil, err
 		}
 		conf.Certificates = []tls.Certificate{cert}
 	}
 
-	return conf
+	return conf, nil
 }
 
-// printHeaders writes headers to stderr in a stable order for --verbose
-func printHeaders(prefix string, h http.Header) {
+func newClient(cfg *config) (*http.Client, error) {
+	tlsConfig, err := genTLSConfig(cfg.Options, tlsServerName(cfg.hostHeader))
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{
+		Timeout: time.Duration(cfg.Timeout) * time.Second,
+		// a redirect is not followed and the 3xx response is checked
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		// Proxy is not set, so the environment variables like HTTP_PROXY are not used
+		Transport: &http.Transport{
+			TLSClientConfig: tlsConfig,
+			// HTTP/2 is not enabled by default when TLSClientConfig is set
+			ForceAttemptHTTP2: true,
+		},
+	}, nil
+}
+
+func newRequest(cfg *config) (*http.Request, error) {
+	req, err := http.NewRequest(cfg.Method, buildURL(cfg.scheme, cfg.IPAddr, cfg.Port, cfg.URI), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Host = cfg.hostHeader
+	req.Header.Set("User-Agent", cfg.UserAgent)
+
+	for _, header := range cfg.Headers {
+		hdr := strings.SplitN(header, ": ", 2)
+		req.Header.Set(hdr[0], hdr[1])
+	}
+
+	return req, nil
+}
+
+// printHeaders writes headers in a stable order for --verbose
+func printHeaders(w io.Writer, prefix string, h http.Header) {
 	for _, k := range slices.Sorted(maps.Keys(h)) {
 		for _, v := range h[k] {
-			fmt.Fprintf(os.Stderr, "%s%s: %s\n", prefix, k, v)
+			fmt.Fprintf(w, "%s%s: %s\n", prefix, k, v)
 		}
 	}
-}
-
-// unknown prints the message as the plugin output and exits with UNKNOWN
-func unknown(format string, a ...interface{}) {
-	fmt.Printf("HTTP UNKNOWN - "+format+"\n", a...)
-	os.Exit(NagiosUnknown)
 }
 
 // matchExpect reports whether the response matches one of the comma separated
@@ -209,16 +307,12 @@ func jsonValueString(v interface{}) string {
 	}
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
-	// keep <, > and & as they are instead of \u003c etc.
+	// keep <, > and & as they are instead of < etc.
 	enc.SetEscapeHTML(false)
 	// values decoded by parseJSON can always be encoded
 	_ = enc.Encode(v)
 	return strings.TrimSuffix(b.String(), "\n")
 }
-
-// reasonEscaper keeps a reason on the first line and out of the perfdata,
-// as values from the response body (e.g. a JSON value) may contain them
-var reasonEscaper = strings.NewReplacer("|", "¦", "\r", `\r`, "\n", `\n`)
 
 func prettyPrintJSON(b []byte) ([]byte, error) {
 	var out bytes.Buffer
@@ -226,203 +320,165 @@ func prettyPrintJSON(b []byte) ([]byte, error) {
 	return out.Bytes(), err
 }
 
-func main() {
-	var opts Options
-	var result_messages []string
-	var host_header string
-	var additional_out []byte
-	scheme := "http"
-	parser := flags.NewParser(&opts, flags.Default)
-	_, err := parser.Parse()
-	if err != nil {
-		os.Exit(NagiosUnknown)
-	}
+// reasonEscaper keeps a reason on the first line and out of the perfdata,
+// as values from the response body (e.g. a JSON value) may contain them
+var reasonEscaper = strings.NewReplacer("|", "¦", "\r", `\r`, "\n", `\n`)
 
-	if opts.Version {
-		fmt.Printf("check_http_go: %s\n", getVersion())
-		os.Exit(0)
-	}
+// result is the status of the check and the reasons of the failures
+type result struct {
+	status  int
+	reasons []string
+	// longOutput is printed after the first line
+	longOutput []byte
+}
 
-	if opts.Ipaddr == "" && opts.Vhost != "" {
-		opts.Ipaddr = opts.Vhost
-		// -H may have a port (e.g. example.com:5000), which is used to connect to
-		// unless -p is given, as check_http does
-		if host, port, err := net.SplitHostPort(opts.Vhost); err == nil {
-			opts.Ipaddr = host
-			if opts.Port == 0 {
-				if opts.Port, err = strconv.Atoi(port); err != nil {
-					unknown("invalid port in -H: %s", opts.Vhost)
-				}
-			}
-		}
+// fail records a reason and raises the status to at least the given level
+func (r *result) fail(status int, format string, a ...interface{}) {
+	if status > r.status {
+		r.status = status
 	}
-	// accept an IPv6 address in brackets (e.g. [::1]) as well
-	opts.Ipaddr = strings.TrimSuffix(strings.TrimPrefix(opts.Ipaddr, "["), "]")
-	if opts.Ipaddr == "" {
-		unknown("-H or -I is required")
-	}
-	// IsSet is used instead of comparing with "" so that an empty --json-value can be checked
-	jsonCheck := parser.FindOptionByLongName("json-key").IsSet()
-	if jsonCheck != parser.FindOptionByLongName("json-value").IsSet() {
-		unknown("--json-key and --json-value must be specified together")
-	}
-	if jsonCheck && opts.JsonKey == "" {
-		unknown("--json-key must not be empty")
-	}
-	if opts.CACertFile != "" && !opts.VerifyCert {
-		unknown("--ca-cert requires --verify-cert")
-	}
-	if opts.Warn > opts.Crit {
-		unknown("warning threshold %.3fs must not be greater than critical threshold %.3fs", opts.Warn, opts.Crit)
-	}
-	host_header = hostHeader(opts.Ipaddr)
-	if opts.Vhost != "" {
-		host_header = hostHeader(opts.Vhost)
-	}
-	if opts.Ssl {
-		scheme = "https"
-	}
-	if opts.Port == 0 {
-		if opts.Ssl {
-			opts.Port = 443
-		} else {
-			opts.Port = 80
-		}
-	}
+	r.reasons = append(r.reasons, reasonEscaper.Replace(fmt.Sprintf(format, a...)))
+}
 
-	// https://golang.org/pkg/crypto/tls/#Config
-	tr := &http.Transport{
-		TLSClientConfig: genTlsConfig(opts, tlsServerName(host_header)),
-	}
-
-	// https://github.com/golang/go/issues/17051
-	// https://qiita.com/catatsuy/items/ee4fc094c6b9c39ee08f
-	if err := http2.ConfigureTransport(tr); err != nil {
-		unknown("failed to configure h2 transport: %s", err)
-	}
-
-	c := &http.Client{
-		Timeout: time.Duration(opts.Timeout) * time.Second,
-		// https://jonathanmh.com/tracing-preventing-http-redirects-golang/
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: tr,
-	}
-
-	url_str := buildURL(scheme, opts.Ipaddr, opts.Port, opts.Uri)
-
-	values := url.Values{}
-
-	req, err := http.NewRequest(opts.Method, url_str, strings.NewReader(values.Encode()))
-	if err != nil {
-		unknown("%s", err)
-	}
-
-	req.Host = host_header
-	req.Header.Set("User-Agent", opts.UserAgent)
-
-	for _, header := range opts.Headers {
-		hdr := strings.SplitN(header, ": ", 2)
-		req.Header.Set(hdr[0], hdr[1])
-	}
-
-	if opts.Verbose {
-		fmt.Fprintf(os.Stderr, "> %s %s\n", req.Method, req.URL)
-		fmt.Fprintf(os.Stderr, "> Host: %s\n", req.Host)
-		printHeaders("> ", req.Header)
-	}
-
-	t1 := time.Now()
-
-	resp, err := c.Do(req)
-	if err != nil {
-		fmt.Printf("HTTP CRITICAL - %s\n", err)
-		os.Exit(NagiosCritical)
-	}
-
-	defer resp.Body.Close()
-	buf, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Printf("HTTP CRITICAL - %s\n", err)
-		os.Exit(NagiosCritical)
-	}
-
-	t2 := time.Now()
-	diff := t2.Sub(t1)
-
-	size := len(buf)
-
-	// stdout is reserved for the plugin output, whose first line is parsed by Nagios
-	if opts.Verbose {
-		fmt.Fprintf(os.Stderr, "< %s %s\n", resp.Proto, resp.Status)
-		printHeaders("< ", resp.Header)
-		fmt.Fprintf(os.Stderr, "\n%s", buf)
-	}
-
-	nagios_status := NagiosOk
-	// fail records a reason and raises the status to at least the given level
-	fail := func(status int, format string, a ...interface{}) {
-		if status > nagios_status {
-			nagios_status = status
-		}
-		result_messages = append(result_messages, reasonEscaper.Replace(fmt.Sprintf(format, a...)))
-	}
-
-	if opts.Expect == "" {
+func (r *result) checkStatus(cfg *config, resp *http.Response) {
+	if cfg.Expect == "" {
 		if resp.StatusCode >= 500 {
-			fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
+			r.fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
 		} else if resp.StatusCode >= 400 {
-			fail(NagiosWarning, "Unexpected http status code: %d", resp.StatusCode)
+			r.fail(NagiosWarning, "Unexpected http status code: %d", resp.StatusCode)
 		}
-	} else if !matchExpect(opts.Expect, resp.Proto, resp.Status, resp.StatusCode) {
+	} else if !matchExpect(cfg.Expect, resp.Proto, resp.Status, resp.StatusCode) {
 		// check_http returns CRITICAL when the status line does not match -e
-		fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
+		r.fail(NagiosCritical, "Unexpected http status code: %d", resp.StatusCode)
 	}
+}
 
-	if jsonCheck {
-		if d, err := parseJSON(buf); err != nil {
-			fail(NagiosCritical, "response body is not valid JSON: %s", err)
-		} else {
-			matched := false
-			if v, ok := lookupJSON(d, opts.JsonKey); !ok {
-				fail(NagiosCritical, "`%s` is not found in the response body", opts.JsonKey)
-			} else if actual := jsonValueString(v); actual != opts.JsonValue {
-				fail(NagiosCritical, "`%s` is not `%s` (actual: `%s`)", opts.JsonKey, opts.JsonValue, actual)
-			} else {
-				matched = true
-			}
-			// the body can be large, so print it only to help find out why the check failed
-			if !matched {
-				if out, err := prettyPrintJSON(buf); err == nil {
-					additional_out = out
-				}
-			}
-		}
+func (r *result) checkJSON(cfg *config, body []byte) {
+	d, err := parseJSON(body)
+	if err != nil {
+		r.fail(NagiosCritical, "response body is not valid JSON: %s", err)
+		return
 	}
+	if v, ok := lookupJSON(d, cfg.JSONKey); !ok {
+		r.fail(NagiosCritical, "`%s` is not found in the response body", cfg.JSONKey)
+	} else if actual := jsonValueString(v); actual != cfg.JSONValue {
+		r.fail(NagiosCritical, "`%s` is not `%s` (actual: `%s`)", cfg.JSONKey, cfg.JSONValue, actual)
+	} else {
+		return
+	}
+	// the body can be large, so print it only to help find out why the check failed
+	if out, err := prettyPrintJSON(body); err == nil {
+		r.longOutput = out
+	}
+}
 
-	if diff.Seconds() > opts.Crit {
-		fail(NagiosCritical, "response time %.3fs exceeded critical threshold %.3fs", diff.Seconds(), opts.Crit)
-	} else if diff.Seconds() > opts.Warn {
-		fail(NagiosWarning, "response time %.3fs exceeded warning threshold %.3fs", diff.Seconds(), opts.Warn)
+func (r *result) checkResponseTime(cfg *config, elapsed time.Duration) {
+	if elapsed.Seconds() > cfg.Crit {
+		r.fail(NagiosCritical, "response time %.3fs exceeded critical threshold %.3fs", elapsed.Seconds(), cfg.Crit)
+	} else if elapsed.Seconds() > cfg.Warn {
+		r.fail(NagiosWarning, "response time %.3fs exceeded warning threshold %.3fs", elapsed.Seconds(), cfg.Warn)
 	}
+}
 
-	result_str := "OK"
-	if nagios_status == NagiosWarning {
-		result_str = "WARNING"
-	} else if nagios_status == NagiosCritical {
-		result_str = "CRITICAL"
+func statusText(status int) string {
+	switch status {
+	case NagiosOk:
+		return "OK"
+	case NagiosWarning:
+		return "WARNING"
+	case NagiosCritical:
+		return "CRITICAL"
+	default:
+		return "UNKNOWN"
 	}
+}
+
+// formatOutput returns the plugin output: the first line has the status, the
+// reasons and the perfdata, followed by the long output if any
+func formatOutput(cfg *config, resp *http.Response, size int, elapsed time.Duration, r *result) string {
+	var out strings.Builder
 	// the reasons are on the first line, which is often the only line shown in notifications
 	reasons := ""
-	if len(result_messages) > 0 {
-		reasons = strings.Join(result_messages, "; ") + " - "
+	if len(r.reasons) > 0 {
+		reasons = strings.Join(r.reasons, "; ") + " - "
 	}
 	// same format as check_http: the perfdata of time has the thresholds, 0 as min and the timeout as max
-	fmt.Printf("HTTP %s: %s %s - %s%d bytes in %.3f second response time |time=%.6fs;%.6f;%.6f;0.000000;%.6f size=%dB;;;0\n",
-		result_str, resp.Proto, resp.Status, reasons, size, diff.Seconds(), diff.Seconds(), opts.Warn, opts.Crit, float64(opts.Timeout), size)
-	if len(additional_out) > 0 {
-		fmt.Printf("\n%s", additional_out)
+	fmt.Fprintf(&out, "HTTP %s: %s %s - %s%d bytes in %.3f second response time |time=%.6fs;%.6f;%.6f;0.000000;%.6f size=%dB;;;0\n",
+		statusText(r.status), resp.Proto, resp.Status, reasons, size, elapsed.Seconds(), elapsed.Seconds(), cfg.Warn, cfg.Crit, float64(cfg.Timeout), size)
+	if len(r.longOutput) > 0 {
+		fmt.Fprintf(&out, "\n%s", r.longOutput)
 	}
-	os.Exit(nagios_status)
+	return out.String()
+}
+
+// unknown writes the error as the plugin output and returns UNKNOWN
+func unknown(w io.Writer, err error) int {
+	fmt.Fprintf(w, "HTTP UNKNOWN - %s\n", err)
+	return NagiosUnknown
+}
+
+// run performs the check with the command line arguments, writes the plugin
+// output to stdout and the --verbose output to stderr, and returns the exit status.
+// stdout is reserved for the plugin output, whose first line is parsed by Nagios.
+func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg, err := parseArgs(args)
+	if errors.Is(err, errUsage) {
+		return NagiosUnknown
+	}
+	if err != nil {
+		return unknown(stdout, err)
+	}
+	if cfg.Version {
+		fmt.Fprintf(stdout, "check_http_go: %s\n", getVersion())
+		return NagiosOk
+	}
+
+	client, err := newClient(cfg)
+	if err != nil {
+		return unknown(stdout, err)
+	}
+	req, err := newRequest(cfg)
+	if err != nil {
+		return unknown(stdout, err)
+	}
+
+	if cfg.Verbose {
+		fmt.Fprintf(stderr, "> %s %s\n", req.Method, req.URL)
+		fmt.Fprintf(stderr, "> Host: %s\n", req.Host)
+		printHeaders(stderr, "> ", req.Header)
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(stdout, "HTTP CRITICAL - %s\n", err)
+		return NagiosCritical
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(stdout, "HTTP CRITICAL - %s\n", err)
+		return NagiosCritical
+	}
+	elapsed := time.Since(start)
+
+	if cfg.Verbose {
+		fmt.Fprintf(stderr, "< %s %s\n", resp.Proto, resp.Status)
+		printHeaders(stderr, "< ", resp.Header)
+		fmt.Fprintf(stderr, "\n%s", body)
+	}
+
+	r := &result{status: NagiosOk}
+	r.checkStatus(cfg, resp)
+	if cfg.jsonCheck {
+		r.checkJSON(cfg, body)
+	}
+	r.checkResponseTime(cfg, elapsed)
+
+	fmt.Fprint(stdout, formatOutput(cfg, resp, len(body), elapsed, r))
+	return r.status
+}
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
