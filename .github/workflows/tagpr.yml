@@ -1,0 +1,36 @@
+name: tagpr
+
+on:
+  push:
+    branches:
+      - master
+
+# The job authenticates as a GitHub App instead of using GITHUB_TOKEN, so the
+# workflow itself needs no write access.
+permissions:
+  contents: read
+
+jobs:
+  tagpr:
+    runs-on: ubuntu-latest
+    steps:
+      # A pull request or tag created with GITHUB_TOKEN does not start other
+      # workflows, so CI would not run on the release pull request and
+      # release.yml would never fire on the tag. An App installation token does.
+      - name: Generate a token for the tagpr app
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.TAGPR_APP_ID }}
+          private-key: ${{ secrets.TAGPR_APP_PRIVATE_KEY }}
+
+      # tagpr passes the token to git itself, so checkout does not need to
+      # leave credentials behind.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - uses: Songmu/tagpr@e1250d6c84e4425db82b5e90549d62dfe23e9ebe # v1.21.4
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

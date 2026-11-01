@@ -1,0 +1,10 @@
+[tagpr]
+	releaseBranch = master
+	# The version lives only in Git tags; goreleaser injects it at build time
+	# with -X main.version, so there is no version file to rewrite.
+	versionFile = -
+	vPrefix = true
+	changelog = true
+	# goreleaser owns the GitHub Release: release.yml publishes the binaries
+	# and the release notes when the tag lands. tagpr only creates the tag.
+	release = false
