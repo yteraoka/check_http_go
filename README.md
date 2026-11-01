@@ -221,9 +221,6 @@ Development
 go test ./...
 ```
 
-Releases are built by [GoReleaser](https://goreleaser.com/) on GitHub Actions when a `v*` tag is pushed.
+Releases are managed by [tagpr](https://github.com/Songmu/tagpr). Every push to `master` opens or updates a release pull request that updates `CHANGELOG.md`. Merging it pushes a `v*` tag, and [GoReleaser](https://goreleaser.com/) then builds the binaries and publishes the GitHub Release.
 
-```
-git tag v0.3.0
-git push origin v0.3.0
-```
+The next version is a patch bump by default. Add the `tagpr:minor` or `tagpr:major` label to the release pull request for a bigger bump.
